@@ -1,0 +1,89 @@
+export type TradeSide = "BUY" | "SELL";
+
+export interface ParsedTrade {
+  symbol: string;
+  side: TradeSide;
+  entry: number;
+  stopLoss: number;
+  takeProfits: number[];
+  comment?: string;
+}
+
+export interface ParseSignalRequest {
+  rawMessage: string;
+}
+
+export interface ParseSignalResponse {
+  valid: boolean;
+  trade?: ParsedTrade;
+  warnings: string[];
+  errors: string[];
+}
+
+export interface ExecuteTradeRequest {
+  rawMessage: string;
+  trade: ParsedTrade;
+  targetAccount: string;
+  lotSize: number;
+  note?: string;
+}
+
+export type TradeStatus = "PARSED" | "EXECUTING" | "EXECUTED" | "FAILED" | "REJECTED";
+
+export interface TradeRecord {
+  pk: string;
+  sk: string;
+  gsi1pk: string;
+  gsi1sk: string;
+  entityType: "TRADE";
+  signalId: string;
+  userId: string;
+  rawMessage: string;
+  symbol: string;
+  side: TradeSide;
+  entry: number;
+  stopLoss: number;
+  takeProfits: number[];
+  comment?: string;
+  targetAccount: string;
+  lotSize: number;
+  note?: string;
+  status: TradeStatus;
+  dedupeKey: string;
+  parseWarnings: string[];
+  provider: string;
+  providerResponse?: unknown;
+  executionId?: string;
+  errorMessage?: string;
+  createdAt: string;
+  executedAt?: string;
+}
+
+export interface TradeExecutionResult {
+  status: "EXECUTED" | "FAILED";
+  executionId?: string;
+  providerResponse?: unknown;
+  message: string;
+}
+
+export interface ConnectivityTestResult {
+  status: "OK" | "FAILED";
+  provider: string;
+  message: string;
+  response?: unknown;
+}
+
+export interface ExecutionProvider {
+  executeTrade(input: {
+    symbol: string;
+    side: TradeSide;
+    entry: number;
+    stopLoss: number;
+    takeProfits: number[];
+    lotSize: number;
+    targetAccount: string;
+    note?: string;
+    requestId?: number;
+  }): Promise<TradeExecutionResult>;
+  testConnectivity(): Promise<ConnectivityTestResult>;
+}

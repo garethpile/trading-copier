@@ -1,0 +1,21 @@
+{
+  "name": "tradingcopier-infra",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "cdk": "cdk",
+    "synth": "cdk synth",
+    "deploy": "cdk deploy"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.214.0",
+    "constructs": "^10.4.2"
+  },
+  "devDependencies": {
+    "aws-cdk": "^2.1029.1",
+    "typescript": "^5.9.2",
+    "@types/node": "^24.3.0",
+    "ts-node": "^10.9.2"
+  }
+}

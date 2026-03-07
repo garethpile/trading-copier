@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/components/executionresultpanel.tsx","./src/components/loginform.tsx","./src/components/parsedtradereview.tsx","./src/components/tradehistorytable.tsx","./src/pages/signalintakepage.tsx","./src/pages/tradehistorypage.tsx","./src/services/api.ts","./src/services/auth.ts","./src/types/index.ts"],"version":"5.9.3"}

@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+.env
+.DS_Store
+frontend/dist/
+backend/dist/
+infra/cdk/dist/
+cdk.out/
