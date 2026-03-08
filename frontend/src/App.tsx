@@ -1,15 +1,17 @@
 import { useEffect, useState } from "react";
 import { LoginForm } from "./components/LoginForm";
-import { isAuthenticated, login, logout } from "./services/auth";
+import { isAuthenticated, logout } from "./services/auth";
 import { SignalIntakePage } from "./pages/SignalIntakePage";
 import { TradeHistoryPage } from "./pages/TradeHistoryPage";
+import { AdminPage } from "./pages/AdminPage";
+import { SecuritySettings } from "./components/SecuritySettings";
 
-type View = "intake" | "history";
+type View = "intake" | "history" | "admin" | "security";
 
 export default function App() {
   const [authed, setAuthed] = useState(false);
-  const [authError, setAuthError] = useState<string | undefined>();
   const [view, setView] = useState<View>("intake");
+  const [profileOpen, setProfileOpen] = useState(false);
 
   useEffect(() => {
     void isAuthenticated().then(setAuthed).catch(() => setAuthed(false));
@@ -19,18 +21,7 @@ export default function App() {
     return (
       <main className="container">
         <h1>Trading Copier</h1>
-        <LoginForm
-          onSubmit={async (username, password) => {
-            setAuthError(undefined);
-            try {
-              await login(username, password);
-              setAuthed(true);
-            } catch (error) {
-              setAuthError(String(error));
-            }
-          }}
-          error={authError}
-        />
+        <LoginForm onAuthenticated={() => setAuthed(true)} />
       </main>
     );
   }
@@ -46,19 +37,57 @@ export default function App() {
           <button onClick={() => setView("history")} className={view === "history" ? "active" : "ghost"}>
             Trade History
           </button>
-          <button
-            className="ghost"
-            onClick={() => {
-              void logout();
-              setAuthed(false);
-            }}
-          >
-            Sign Out
-          </button>
+          <div className="profile-menu">
+            <button
+              type="button"
+              className="ghost profile-icon"
+              onClick={() => setProfileOpen((prev) => !prev)}
+              aria-label="Profile menu"
+            >
+              <span>👤</span>
+            </button>
+            {profileOpen ? (
+              <div className="profile-dropdown card stack">
+                <button
+                  type="button"
+                  className={view === "admin" ? "active" : "ghost"}
+                  onClick={() => {
+                    setView("admin");
+                    setProfileOpen(false);
+                  }}
+                >
+                  Admin
+                </button>
+                <button
+                  type="button"
+                  className={view === "security" ? "active" : "ghost"}
+                  onClick={() => {
+                    setView("security");
+                    setProfileOpen(false);
+                  }}
+                >
+                  Security
+                </button>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => {
+                    void logout();
+                    setAuthed(false);
+                  }}
+                >
+                  Sign Out
+                </button>
+              </div>
+            ) : null}
+          </div>
         </div>
       </header>
 
-      {view === "intake" ? <SignalIntakePage /> : <TradeHistoryPage />}
+      {view === "intake" ? <SignalIntakePage /> : null}
+      {view === "history" ? <TradeHistoryPage /> : null}
+      {view === "admin" ? <AdminPage /> : null}
+      {view === "security" ? <SecuritySettings /> : null}
     </main>
   );
 }

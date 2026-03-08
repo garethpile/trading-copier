@@ -4,6 +4,8 @@ import {
   ExecuteTradeRequest,
   ExecuteTradeResponse,
   ParseSignalResponse,
+  SocketFeatureEnableResponse,
+  SocketFeatureStatusResponse,
   TradeRecord
 } from "../types";
 
@@ -59,4 +61,15 @@ export const testConnectivity = async (): Promise<ConnectivityTestResponse> =>
   callApi<ConnectivityTestResponse>("/connectivity-test", {
     method: "POST",
     body: JSON.stringify({})
+  });
+
+export const getSocketFeatureStatus = async (accountId: string): Promise<SocketFeatureStatusResponse> =>
+  callApi<SocketFeatureStatusResponse>(`/admin/socket-feature-status?accountId=${encodeURIComponent(accountId)}`, {
+    method: "GET"
+  });
+
+export const enableSocketFeature = async (accountId: string): Promise<SocketFeatureEnableResponse> =>
+  callApi<SocketFeatureEnableResponse>("/admin/enable-socket-feature", {
+    method: "POST",
+    body: JSON.stringify({ accountId })
   });

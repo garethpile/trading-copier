@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
-import { executeTrade, parseSignal, testConnectivity } from "../services/api";
-import { ConnectivityTestResponse, ExecuteTradeResponse, ParseSignalResponse } from "../types";
+import { executeTrade, parseSignal } from "../services/api";
+import { ExecuteTradeResponse, ParseSignalResponse } from "../types";
 import { ParsedTradeReview } from "../components/ParsedTradeReview";
 import { ExecutionResultPanel } from "../components/ExecutionResultPanel";
 
@@ -24,7 +24,6 @@ export function SignalIntakePage() {
   const [lotSize, setLotSize] = useState(defaultLotSize);
   const [note, setNote] = useState("");
   const [executionResult, setExecutionResult] = useState<ExecuteTradeResponse | null>(null);
-  const [connectivityResult, setConnectivityResult] = useState<ConnectivityTestResponse | null>(null);
   const [loading, setLoading] = useState(false);
 
   const handleParse = async () => {
@@ -129,47 +128,6 @@ export function SignalIntakePage() {
                 <li key={e}>{e}</li>
               ))}
             </ul>
-          </div>
-        ) : null}
-      </div>
-
-      <div className="card stack">
-        <div className="row">
-          <h3>MetaCopier Connectivity</h3>
-          <button
-            type="button"
-            className="ghost"
-            disabled={loading}
-            onClick={async () => {
-              try {
-                setLoading(true);
-                setConnectivityResult(await testConnectivity());
-              } catch (error) {
-                setConnectivityResult({
-                  status: "FAILED",
-                  provider: "MetaCopier",
-                  message: "Connectivity test failed",
-                  error: String(error)
-                });
-              } finally {
-                setLoading(false);
-              }
-            }}
-          >
-            Test Connectivity
-          </button>
-        </div>
-        {connectivityResult ? (
-          <div>
-            <strong>Status:</strong> {connectivityResult.status} <br />
-            <strong>Provider:</strong> {connectivityResult.provider} <br />
-            <strong>Message:</strong> {connectivityResult.message}
-            {connectivityResult.error ? (
-              <>
-                <br />
-                <strong>Error:</strong> {connectivityResult.error}
-              </>
-            ) : null}
           </div>
         ) : null}
       </div>

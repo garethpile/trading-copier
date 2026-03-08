@@ -11,6 +11,19 @@ import * as authorizers from "aws-cdk-lib/aws-apigatewayv2-authorizers";
 export class TradingCopierStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
+    const toOrigin = (value: string): string => {
+      const trimmed = value.trim();
+      if (!trimmed) return trimmed;
+      if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+        try {
+          const parsed = new URL(trimmed);
+          return `${parsed.protocol}//${parsed.host}`;
+        } catch {
+          return trimmed;
+        }
+      }
+      return trimmed;
+    };
 
     const table = new dynamodb.Table(this, "TradeSignalsTable", {
       tableName: "TradeSignals",
@@ -28,8 +41,15 @@ export class TradingCopierStack extends cdk.Stack {
     });
 
     const userPool = new cognito.UserPool(this, "TradingCopierUserPool", {
-      selfSignUpEnabled: false,
+      selfSignUpEnabled: true,
       signInAliases: { username: true, email: true },
+      autoVerify: { email: true },
+      accountRecovery: cognito.AccountRecovery.EMAIL_AND_PHONE_WITHOUT_MFA,
+      mfa: cognito.Mfa.OPTIONAL,
+      mfaSecondFactor: {
+        otp: true,
+        sms: false
+      },
       passwordPolicy: {
         minLength: 12,
         requireDigits: true,
@@ -39,19 +59,94 @@ export class TradingCopierStack extends cdk.Stack {
       }
     });
 
+    const account = cdk.Stack.of(this).account;
+    const region = cdk.Stack.of(this).region;
+    const hostedUiDomainPrefix =
+      process.env.COGNITO_DOMAIN_PREFIX?.trim() || `tradingcopier-${account}-${region}`;
+    const callbackUrls = (
+      process.env.COGNITO_CALLBACK_URLS?.trim() || "http://localhost:5173"
+    )
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const logoutUrls = (
+      process.env.COGNITO_LOGOUT_URLS?.trim() || "http://localhost:5173"
+    )
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+
+    const googleEnabled = (process.env.GOOGLE_SIGNIN_ENABLED ?? "true").toLowerCase() !== "false";
+    const googleOauthSecretName = process.env.GOOGLE_OAUTH_SECRET_NAME?.trim() || "tradingcopier/google-oauth";
+    const googleOauthSecret = secretsmanager.Secret.fromSecretNameV2(
+      this,
+      "GoogleOauthSecret",
+      googleOauthSecretName
+    );
+
+    let googleIdp: cognito.UserPoolIdentityProviderGoogle | undefined;
+    if (googleEnabled) {
+      const googleClientId = googleOauthSecret.secretValueFromJson("clientId");
+      const googleClientSecret = googleOauthSecret.secretValueFromJson("clientSecret");
+      googleIdp = new cognito.UserPoolIdentityProviderGoogle(this, "GoogleIdP", {
+        userPool,
+        clientId: googleClientId.unsafeUnwrap(),
+        clientSecretValue: googleClientSecret,
+        scopes: ["openid", "profile", "email"],
+        attributeMapping: {
+          email: cognito.ProviderAttribute.GOOGLE_EMAIL,
+          givenName: cognito.ProviderAttribute.GOOGLE_GIVEN_NAME,
+          familyName: cognito.ProviderAttribute.GOOGLE_FAMILY_NAME
+        }
+      });
+    }
+
+    const domain = userPool.addDomain("TradingCopierDomain", {
+      cognitoDomain: {
+        domainPrefix: hostedUiDomainPrefix
+      }
+    });
+
     const userPoolClient = new cognito.UserPoolClient(this, "TradingCopierUserPoolClient", {
       userPool,
       authFlows: {
         userPassword: true,
         userSrp: true
+      },
+      supportedIdentityProviders: googleEnabled
+        ? [cognito.UserPoolClientIdentityProvider.COGNITO, cognito.UserPoolClientIdentityProvider.GOOGLE]
+        : [cognito.UserPoolClientIdentityProvider.COGNITO],
+      oAuth: {
+        callbackUrls,
+        logoutUrls,
+        scopes: [
+          cognito.OAuthScope.OPENID,
+          cognito.OAuthScope.EMAIL,
+          cognito.OAuthScope.PROFILE,
+          cognito.OAuthScope.COGNITO_ADMIN
+        ],
+        flows: {
+          authorizationCodeGrant: true
+        }
       }
     });
 
-    const metacopierApiKeySeed = process.env.METACOPIER_API_KEY ?? "QhbPqO+H9!0r5s3@vKWuZHkrmiG1AMHw";
+    if (googleIdp) {
+      userPoolClient.node.addDependency(googleIdp);
+    }
+
+    const metacopierApiKeySeed = process.env.METACOPIER_API_KEY?.trim();
+    if (!metacopierApiKeySeed) {
+      throw new Error("METACOPIER_API_KEY environment variable is required for deployment");
+    }
+    const metacopierUserEmailSeed = process.env.METACOPIER_USER_EMAIL?.trim();
     const metacopierSecret = new secretsmanager.Secret(this, "MetaCopierSecret", {
       secretName: "tradingcopier/metacopier",
       secretStringValue: cdk.SecretValue.unsafePlainText(
-        JSON.stringify({ apiKey: metacopierApiKeySeed })
+        JSON.stringify({
+          apiKey: metacopierApiKeySeed,
+          ...(metacopierUserEmailSeed ? { userEmail: metacopierUserEmailSeed } : {})
+        })
       )
     });
 
@@ -107,6 +202,22 @@ export class TradingCopierStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10)
     });
 
+    const getSocketFeatureStatusFn = new lambda.Function(this, "GetSocketFeatureStatusFn", {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: "handlers/getSocketFeatureStatus.handler",
+      code: lambdaCode,
+      environment: commonEnv,
+      timeout: cdk.Duration.seconds(10)
+    });
+
+    const enableSocketFeatureFn = new lambda.Function(this, "EnableSocketFeatureFn", {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: "handlers/enableSocketFeature.handler",
+      code: lambdaCode,
+      environment: commonEnv,
+      timeout: cdk.Duration.seconds(10)
+    });
+
     table.grantReadWriteData(parseSignalFn);
     table.grantReadWriteData(executeTradeFn);
     table.grantReadWriteData(getTradeHistoryFn);
@@ -114,9 +225,30 @@ export class TradingCopierStack extends cdk.Stack {
 
     metacopierSecret.grantRead(executeTradeFn);
     metacopierSecret.grantRead(testConnectivityFn);
+    metacopierSecret.grantRead(getSocketFeatureStatusFn);
+    metacopierSecret.grantRead(enableSocketFeatureFn);
+    metacopierSecret.grantRead(getTradeHistoryFn);
+
+    const corsOrigins = (
+      process.env.CORS_ALLOW_ORIGINS?.trim() ||
+      "http://localhost:5173,https://drppa7twrc4zh.cloudfront.net"
+    )
+      .split(",")
+      .map((origin) => toOrigin(origin))
+      .filter(Boolean);
 
     const httpApi = new apigwv2.HttpApi(this, "TradingCopierApi", {
-      apiName: "tradingcopier-api"
+      apiName: "tradingcopier-api",
+      corsPreflight: {
+        allowOrigins: corsOrigins,
+        allowMethods: [
+          apigwv2.CorsHttpMethod.GET,
+          apigwv2.CorsHttpMethod.POST,
+          apigwv2.CorsHttpMethod.OPTIONS
+        ],
+        allowHeaders: ["Authorization", "Content-Type"],
+        maxAge: cdk.Duration.days(10)
+      }
     });
 
     const jwtAuthorizer = new authorizers.HttpJwtAuthorizer("CognitoJwtAuthorizer", userPool.userPoolProviderUrl, {
@@ -141,6 +273,23 @@ export class TradingCopierStack extends cdk.Stack {
       path: "/connectivity-test",
       methods: [apigwv2.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration("ConnectivityTestIntegration", testConnectivityFn),
+      authorizer: jwtAuthorizer
+    });
+
+    httpApi.addRoutes({
+      path: "/admin/socket-feature-status",
+      methods: [apigwv2.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration(
+        "GetSocketFeatureStatusIntegration",
+        getSocketFeatureStatusFn
+      ),
+      authorizer: jwtAuthorizer
+    });
+
+    httpApi.addRoutes({
+      path: "/admin/enable-socket-feature",
+      methods: [apigwv2.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration("EnableSocketFeatureIntegration", enableSocketFeatureFn),
       authorizer: jwtAuthorizer
     });
 
@@ -172,6 +321,10 @@ export class TradingCopierStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, "MetaCopierSecretArn", {
       value: metacopierSecret.secretArn
+    });
+
+    new cdk.CfnOutput(this, "CognitoHostedUiDomain", {
+      value: domain.baseUrl()
     });
   }
 }

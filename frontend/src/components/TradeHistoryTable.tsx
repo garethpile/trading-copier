@@ -51,6 +51,7 @@ const isClosedRequest = (item: TradeRecord): boolean => {
 };
 
 const requestPill = (item: TradeRecord): { label: string; className: string } => {
+  if (isClosedRequest(item)) return { label: "CLOSED", className: "pill" };
   const status = item.status.toUpperCase();
   if (status === "EXECUTING") return { label: "IN FLIGHT", className: "pill warn" };
   if (status === "EXECUTED") return { label: "LIVE", className: "pill ok" };
@@ -64,6 +65,13 @@ const legPillClass = (leg: LegView): string => {
   if (leg.runtimeState === "OPEN") return "pill ok";
   if (leg.runtimeState === "CLOSED") return "pill";
   return "pill";
+};
+
+const filterLegsByMode = (legs: LegView[], filter: FilterMode): LegView[] => {
+  if (filter === "ACTIVE") {
+    return legs.filter((leg) => !(leg.runtimeState === "CLOSED" || leg.status === "FAILED"));
+  }
+  return legs.filter((leg) => leg.runtimeState === "CLOSED" || leg.status === "FAILED");
 };
 
 export function TradeHistoryTable({
@@ -108,15 +116,18 @@ export function TradeHistoryTable({
       ) : null}
 
       {filtered.map((item) => {
-        const legs = toLegs(item.providerResponse);
+        const allLegs = toLegs(item.providerResponse);
+        const legs = filterLegsByMode(allLegs, filter);
         const state = requestPill(item);
+        const sideClass = item.side === "BUY" ? "side-buy" : "side-sell";
+        const requestSideClass = item.side === "BUY" ? "request-buy" : "request-sell";
 
         return (
-          <article className="card stack request-card" key={item.signalId}>
+          <article className={`card stack request-card ${requestSideClass}`} key={item.signalId}>
             <div className="row spread">
               <div>
                 <h4 className="request-title">
-                  {item.symbol} {item.side}
+                  {item.symbol} <span className={sideClass}>{item.side}</span>
                 </h4>
                 <div className="request-meta">{new Date(item.createdAt).toLocaleString()}</div>
               </div>
@@ -145,11 +156,11 @@ export function TradeHistoryTable({
             </div>
 
             <div className="stack">
-              <strong>Legs (Grouped per Request)</strong>
+              <strong>{filter === "ACTIVE" ? "Open Legs (Grouped per Request)" : "Closed Legs (Grouped per Request)"}</strong>
               {legs.length === 0 ? (
                 <div className="leg-row">
                   <span className="pill">N/A</span>
-                  <span>No leg detail available</span>
+                  <span>{filter === "ACTIVE" ? "No open legs." : "No closed legs."}</span>
                 </div>
               ) : (
                 legs.map((leg) => (

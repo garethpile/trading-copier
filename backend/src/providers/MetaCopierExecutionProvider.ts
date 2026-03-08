@@ -1,5 +1,4 @@
 import { SecretsManagerClient, GetSecretValueCommand } from "@aws-sdk/client-secrets-manager";
-import axios from "axios";
 import { ConnectivityTestResult, ExecutionProvider, TradeExecutionResult } from "../models/types";
 
 interface MetaCopierSecret {
@@ -61,6 +60,26 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
     return this.secretCache;
   }
 
+  private async fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      return await fetch(url, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private async readBody(response: Response): Promise<unknown> {
+    const text = await response.text();
+    if (!text) return null;
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
+  }
+
   async executeTrade(input: {
     symbol: string;
     side: "BUY" | "SELL";
@@ -79,9 +98,10 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
 
     try {
       const endpoint = `${this.tradingBaseUrl.replace(/\/$/, "")}/rest/api/v1/accounts/${input.targetAccount}/positions`;
-      await axios.post(
-        endpoint,
-        {
+      const response = await this.fetchWithTimeout(endpoint, {
+        method: "POST",
+        headers: this.buildHeaders(secret.apiKey),
+        body: JSON.stringify({
           symbol: input.symbol,
           orderType: input.side === "BUY" ? "Buy" : "Sell",
           openPrice: 0,
@@ -90,13 +110,22 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
           volume: input.lotSize,
           requestId,
           ...(comment ? { comment } : {})
-        },
-        {
-          timeout: this.timeoutMs,
-          headers: this.buildHeaders(secret.apiKey),
-          validateStatus: (status) => status === 204
-        }
-      );
+        })
+      });
+      if (response.status !== 204) {
+        const body = await this.readBody(response);
+        return {
+          status: "FAILED",
+          message: `MetaCopier call failed: ${response.status}`,
+          providerResponse: {
+            status: response.status,
+            statusText: response.statusText,
+            data: body,
+            url: endpoint,
+            method: "POST"
+          }
+        };
+      }
 
       return {
         status: "EXECUTED",
@@ -109,28 +138,6 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
         message: "Trade submitted successfully at market price"
       };
     } catch (error) {
-      if (axios.isAxiosError(error)) {
-        const headers =
-          error.response?.headers && typeof (error.response.headers as { toJSON?: () => unknown }).toJSON === "function"
-            ? (error.response.headers as { toJSON: () => unknown }).toJSON()
-            : error.response?.headers;
-        const responseSummary = {
-          status: error.response?.status,
-          statusText: error.response?.statusText,
-          headers: toPlainJson(headers),
-          data: toPlainJson(error.response?.data),
-          url: error.config?.url,
-          method: error.config?.method
-        };
-
-        console.error("MetaCopier executeTrade failed", responseSummary);
-        return {
-          status: "FAILED",
-          message: `MetaCopier call failed: ${error.response?.status ?? "network_error"}`,
-          providerResponse: toPlainJson(responseSummary)
-        };
-      }
-
       console.error("MetaCopier executeTrade failed (non-axios)", String(error));
       return {
         status: "FAILED",
@@ -144,43 +151,44 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
     const secret = await this.getSecret();
 
     try {
-      const response = await axios.get(`${this.globalBaseUrl.replace(/\/$/, "")}/rest/api/v1/accounts`, {
-        timeout: this.timeoutMs,
+      const endpoint = `${this.globalBaseUrl.replace(/\/$/, "")}/rest/api/v1/accounts`;
+      const response = await this.fetchWithTimeout(endpoint, {
+        method: "GET",
         headers: this.buildHeaders(secret.apiKey)
       });
+      const body = await this.readBody(response);
+      if (!response.ok) {
+        console.error("MetaCopier testConnectivity failed", {
+          status: response.status,
+          statusText: response.statusText,
+          data: toPlainJson(body),
+          url: endpoint,
+          method: "GET"
+        });
+        return {
+          status: "FAILED",
+          provider: "MetaCopier",
+          message: `Connectivity test failed: ${response.status}`,
+          response: {
+            status: response.status,
+            statusText: response.statusText,
+            data: toPlainJson(body),
+            url: endpoint,
+            method: "GET"
+          }
+        };
+      }
 
       return {
         status: "OK",
         provider: "MetaCopier",
         message: "Connectivity test succeeded",
         response: {
-          accounts: Array.isArray(response.data) ? response.data.length : undefined,
+          accounts: Array.isArray(body) ? body.length : undefined,
           tradingHost: this.tradingBaseUrl
         }
       };
     } catch (error) {
-      if (axios.isAxiosError(error)) {
-        const headers =
-          error.response?.headers && typeof (error.response.headers as { toJSON?: () => unknown }).toJSON === "function"
-            ? (error.response.headers as { toJSON: () => unknown }).toJSON()
-            : error.response?.headers;
-        const responseSummary = {
-          status: error.response?.status,
-          statusText: error.response?.statusText,
-          headers: toPlainJson(headers),
-          data: toPlainJson(error.response?.data),
-          url: error.config?.url,
-          method: error.config?.method
-        };
-        console.error("MetaCopier testConnectivity failed", responseSummary);
-        return {
-          status: "FAILED",
-          provider: "MetaCopier",
-          message: `Connectivity test failed: ${error.response?.status ?? "network_error"}`,
-          response: toPlainJson(responseSummary)
-        };
-      }
-
       console.error("MetaCopier testConnectivity failed (non-axios)", String(error));
       return {
         status: "FAILED",

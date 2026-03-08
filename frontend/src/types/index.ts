@@ -59,3 +59,16 @@ export interface ConnectivityTestResponse {
   response?: unknown;
   error?: string;
 }
+
+export interface SocketFeatureStatusResponse {
+  status: "ENABLED" | "DISABLED" | "UNKNOWN";
+  accountId: string;
+  details?: unknown;
+}
+
+export interface SocketFeatureEnableResponse {
+  success: boolean;
+  accountId: string;
+  message: string;
+  response?: unknown;
+}

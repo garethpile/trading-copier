@@ -1,7 +1,7 @@
 :root {
   font-family: "Avenir Next", "Segoe UI", sans-serif;
-  color: #12241d;
-  background: radial-gradient(circle at top left, #daf5e6, #f5f9f7 50%, #ffffff);
+  color: #dce8ff;
+  background: radial-gradient(circle at top left, #15306b, #0a1633 50%, #060d1f);
 }
 
 * {
@@ -10,6 +10,7 @@
 
 body {
   margin: 0;
+  background: transparent;
 }
 
 .container {
@@ -30,17 +31,44 @@ body {
   gap: 10px;
 }
 
+.profile-menu {
+  position: relative;
+}
+
+.profile-icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+}
+
+.profile-dropdown {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 170px;
+  z-index: 20;
+}
+
+.profile-dropdown button {
+  width: 100%;
+  text-align: left;
+}
+
 .spread {
   justify-content: space-between;
   flex-wrap: wrap;
 }
 
 .card {
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid #b8d5c4;
+  background: rgba(13, 25, 56, 0.84);
+  border: 1px solid #36538f;
   border-radius: 12px;
   padding: 16px;
-  box-shadow: 0 5px 20px rgba(10, 50, 35, 0.07);
+  box-shadow: 0 10px 24px rgba(0, 6, 20, 0.35);
 }
 
 label {
@@ -60,28 +88,56 @@ button {
 input,
 textarea,
 select {
-  border: 1px solid #99b8a7;
+  border: 1px solid #4a6eae;
   border-radius: 8px;
   padding: 10px;
+  background: #0f1f45;
+  color: #e7efff;
 }
 
 button {
   border: 1px solid transparent;
   border-radius: 8px;
   padding: 9px 12px;
-  background: #0f7a46;
+  background: #2f6fd8;
   color: #fff;
   cursor: pointer;
 }
 
 button.ghost {
+  background: rgba(18, 37, 79, 0.9);
+  color: #9ec2ff;
+  border-color: #4f79bf;
+}
+
+.google-signin-btn {
   background: #fff;
-  color: #0f7a46;
-  border-color: #0f7a46;
+  color: #1f1f1f;
+  border: 1px solid #747775;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-weight: 600;
+}
+
+.google-signin-btn:hover {
+  background: #f8f9fa;
+}
+
+.google-signin-btn:disabled {
+  background: #f8f9fa;
+  color: #5f6368;
+}
+
+.google-signin-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 button.active {
-  background: #125f3c;
+  background: #1c4ea6;
 }
 
 button:disabled {
@@ -94,19 +150,29 @@ button:disabled {
   margin: 0;
 }
 
+.status-ok {
+  color: #48d597;
+  font-weight: 800;
+}
+
+.status-bad {
+  color: #ff6b81;
+  font-weight: 800;
+}
+
 .pill-group {
   display: inline-flex;
-  border: 1px solid #9dc1ae;
+  border: 1px solid #4f79bf;
   border-radius: 999px;
   overflow: hidden;
 }
 
 .pill-btn {
   border: 0;
-  border-right: 1px solid #9dc1ae;
+  border-right: 1px solid #4f79bf;
   border-radius: 0;
-  background: #f5fbf7;
-  color: #0f7a46;
+  background: #0f2452;
+  color: #9ec2ff;
   padding: 8px 14px;
 }
 
@@ -115,12 +181,32 @@ button:disabled {
 }
 
 .pill-btn.active {
-  background: #0f7a46;
+  background: #2f6fd8;
   color: #fff;
 }
 
 .request-card {
-  border-left: 5px solid #7fb59b;
+  border-left: 5px solid #4f79bf;
+}
+
+.request-buy {
+  background: rgba(47, 114, 66, 0.22);
+  border-color: #5dbb7d;
+}
+
+.request-sell {
+  background: rgba(135, 44, 57, 0.24);
+  border-color: #d47788;
+}
+
+.side-buy {
+  color: #5be081;
+  font-weight: 800;
+}
+
+.side-sell {
+  color: #ff7b8f;
+  font-weight: 800;
 }
 
 .request-title {
@@ -129,12 +215,12 @@ button:disabled {
 }
 
 .request-meta {
-  color: #4f6c5e;
+  color: #9bb2de;
   font-size: 0.9rem;
 }
 
 .request-grid {
-  background: #f7fcf9;
+  background: rgba(11, 27, 62, 0.9);
   padding: 10px;
   border-radius: 10px;
 }
@@ -148,29 +234,29 @@ button:disabled {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.02em;
-  border: 1px solid #b8d5c4;
-  color: #1f3f31;
-  background: #eef7f1;
+  border: 1px solid #4a6eae;
+  color: #dce8ff;
+  background: #173268;
   padding: 4px 8px;
   border-radius: 999px;
 }
 
 .pill.ok {
-  background: #dbf5e6;
-  border-color: #69bd8e;
-  color: #0f5e39;
+  background: #163a7a;
+  border-color: #5da4ff;
+  color: #cde3ff;
 }
 
 .pill.warn {
-  background: #fff1d7;
-  border-color: #d8a042;
-  color: #7f5100;
+  background: #3f3a1e;
+  border-color: #c8a85f;
+  color: #f3dfb0;
 }
 
 .pill.bad {
-  background: #ffe1e1;
-  border-color: #e38787;
-  color: #8b1c1c;
+  background: #4e1f2f;
+  border-color: #d1839f;
+  color: #ffd8e4;
 }
 
 .leg-row {
@@ -178,8 +264,8 @@ button:disabled {
   grid-template-columns: 84px 1fr 1fr 1fr;
   gap: 8px;
   align-items: center;
-  background: #ffffff;
-  border: 1px solid #d4e6dc;
+  background: rgba(15, 32, 70, 0.9);
+  border: 1px solid #36538f;
   border-radius: 10px;
   padding: 8px 10px;
 }
@@ -202,7 +288,7 @@ table {
 th,
 td {
   text-align: left;
-  border-bottom: 1px solid #d7e8de;
+  border-bottom: 1px solid #2f497e;
   padding: 8px;
 }
 

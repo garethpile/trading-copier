@@ -13,6 +13,8 @@ import { handler as executeTradeHandler } from "../handlers/executeTrade";
 import { handler as getTradeHistoryHandler } from "../handlers/getTradeHistory";
 import { handler as getTradeByIdHandler } from "../handlers/getTradeById";
 import { handler as testConnectivityHandler } from "../handlers/testConnectivity";
+import { handler as getSocketFeatureStatusHandler } from "../handlers/getSocketFeatureStatus";
+import { handler as enableSocketFeatureHandler } from "../handlers/enableSocketFeature";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -151,6 +153,8 @@ const invoke = (handler: Handler, pathParamExtractor?: (req: express.Request) =>
 app.post("/parse-signal", invoke(parseSignalHandler as Handler));
 app.post("/execute-trade", invoke(executeTradeHandler as Handler));
 app.post("/connectivity-test", invoke(testConnectivityHandler as Handler));
+app.get("/admin/socket-feature-status", invoke(getSocketFeatureStatusHandler as Handler));
+app.post("/admin/enable-socket-feature", invoke(enableSocketFeatureHandler as Handler));
 app.get("/trade-history", invoke(getTradeHistoryHandler as Handler));
 app.get(
   "/trade/:signalId",
