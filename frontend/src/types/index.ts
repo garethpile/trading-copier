@@ -72,3 +72,14 @@ export interface SocketFeatureEnableResponse {
   message: string;
   response?: unknown;
 }
+
+export interface LotSizeConfig {
+  defaultLotSize: number;
+  symbolLotSizes: Record<string, number>;
+  updatedAt?: string;
+}
+
+export interface TargetAccountsConfig {
+  accounts: string[];
+  updatedAt?: string;
+}

@@ -4,11 +4,13 @@ import {
 } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
+  GetCommand,
   PutCommand,
   QueryCommand,
   UpdateCommand
 } from "@aws-sdk/lib-dynamodb";
-import { TradeRecord, TradeStatus } from "../models/types";
+import { LotSizeConfig, TargetAccountsConfig, TradeRecord, TradeStatus } from "../models/types";
+import { DEFAULT_FALLBACK_LOT_SIZE, DEFAULT_SYMBOL_LOT_SIZES } from "../services/lotSizeDefaults";
 
 export class DuplicateTradeError extends Error {}
 
@@ -167,5 +169,108 @@ export class TradeRepository {
     );
 
     return out.Items?.[0] as TradeRecord | undefined;
+  }
+
+  async getLotSizeConfig(userId: string): Promise<LotSizeConfig> {
+    const pk = `USER#${userId}`;
+    const sk = "SETTINGS#LOT_SIZES";
+
+    const out = await this.doc.send(
+      new GetCommand({
+        TableName: this.tableName,
+        Key: { pk, sk }
+      })
+    );
+
+    const item = out.Item as
+      | {
+          defaultLotSize?: number;
+          symbolLotSizes?: Record<string, number>;
+          updatedAt?: string;
+        }
+      | undefined;
+
+    if (!item) {
+      return {
+        defaultLotSize: DEFAULT_FALLBACK_LOT_SIZE,
+        symbolLotSizes: { ...DEFAULT_SYMBOL_LOT_SIZES }
+      };
+    }
+
+    return {
+      defaultLotSize:
+        typeof item.defaultLotSize === "number" && Number.isFinite(item.defaultLotSize)
+          ? item.defaultLotSize
+          : DEFAULT_FALLBACK_LOT_SIZE,
+      symbolLotSizes: item.symbolLotSizes ?? {},
+      updatedAt: item.updatedAt
+    };
+  }
+
+  async putLotSizeConfig(userId: string, config: LotSizeConfig): Promise<void> {
+    const pk = `USER#${userId}`;
+    const sk = "SETTINGS#LOT_SIZES";
+
+    await this.doc.send(
+      new PutCommand({
+        TableName: this.tableName,
+        Item: {
+          pk,
+          sk,
+          entityType: "SETTINGS_LOT_SIZES",
+          userId,
+          defaultLotSize: config.defaultLotSize,
+          symbolLotSizes: config.symbolLotSizes,
+          updatedAt: config.updatedAt ?? new Date().toISOString()
+        }
+      })
+    );
+  }
+
+  async getTargetAccountsConfig(userId: string): Promise<TargetAccountsConfig> {
+    const pk = `USER#${userId}`;
+    const sk = "SETTINGS#TARGET_ACCOUNTS";
+    const fallbackAccounts = (process.env.ALLOWED_TARGET_ACCOUNTS ?? "a5231bf5-8713-44b6-846d-4c7f43a5bf30")
+      .split(",")
+      .map((v) => v.trim())
+      .filter(Boolean);
+
+    const out = await this.doc.send(
+      new GetCommand({
+        TableName: this.tableName,
+        Key: { pk, sk }
+      })
+    );
+
+    const item = out.Item as { accounts?: string[]; updatedAt?: string } | undefined;
+    if (!item || !Array.isArray(item.accounts) || item.accounts.length === 0) {
+      return {
+        accounts: fallbackAccounts
+      };
+    }
+
+    return {
+      accounts: item.accounts.map((v) => String(v).trim()).filter(Boolean),
+      updatedAt: item.updatedAt
+    };
+  }
+
+  async putTargetAccountsConfig(userId: string, config: TargetAccountsConfig): Promise<void> {
+    const pk = `USER#${userId}`;
+    const sk = "SETTINGS#TARGET_ACCOUNTS";
+
+    await this.doc.send(
+      new PutCommand({
+        TableName: this.tableName,
+        Item: {
+          pk,
+          sk,
+          entityType: "SETTINGS_TARGET_ACCOUNTS",
+          userId,
+          accounts: config.accounts,
+          updatedAt: config.updatedAt ?? new Date().toISOString()
+        }
+      })
+    );
   }
 }

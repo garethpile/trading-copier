@@ -49,7 +49,10 @@ export class ExecutionService {
 
     const provider = buildExecutionProvider();
     const tpLevels = req.trade.takeProfits.filter((tp) => Number.isFinite(tp) && tp > 0);
-    const requestIdBase = Math.floor(Math.random() * 1000);
+    // Use a high-uniqueness requestId base to avoid collisions between parallel requests.
+    // Keep within 32-bit signed integer range for broad API compatibility.
+    const epochSeconds = Math.floor(Date.now() / 1000) % 1_000_000;
+    const requestIdBase = epochSeconds * 1000 + Math.floor(Math.random() * 1000);
     const legResults: Array<{
       leg: number;
       takeProfit: number;
@@ -63,7 +66,7 @@ export class ExecutionService {
     for (let index = 0; index < tpLevels.length; index += 1) {
       const tp = tpLevels[index];
       const legNote = req.note ? `TP${index + 1} ${req.note}` : `TP${index + 1}`;
-      const requestId = (requestIdBase + index) % 1000;
+      const requestId = requestIdBase + index;
       const result = await provider.executeTrade({
         symbol: req.trade.symbol,
         side: req.trade.side,

@@ -218,10 +218,48 @@ export class TradingCopierStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10)
     });
 
+    const getLotSizeConfigFn = new lambda.Function(this, "GetLotSizeConfigFn", {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: "handlers/getLotSizeConfig.handler",
+      code: lambdaCode,
+      environment: commonEnv,
+      timeout: cdk.Duration.seconds(10)
+    });
+
+    const updateLotSizeConfigFn = new lambda.Function(this, "UpdateLotSizeConfigFn", {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: "handlers/updateLotSizeConfig.handler",
+      code: lambdaCode,
+      environment: commonEnv,
+      timeout: cdk.Duration.seconds(10)
+    });
+
+    const getTargetAccountsConfigFn = new lambda.Function(this, "GetTargetAccountsConfigFn", {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: "handlers/getTargetAccountsConfig.handler",
+      code: lambdaCode,
+      environment: commonEnv,
+      timeout: cdk.Duration.seconds(10)
+    });
+
+    const updateTargetAccountsConfigFn = new lambda.Function(this, "UpdateTargetAccountsConfigFn", {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: "handlers/updateTargetAccountsConfig.handler",
+      code: lambdaCode,
+      environment: commonEnv,
+      timeout: cdk.Duration.seconds(10)
+    });
+
     table.grantReadWriteData(parseSignalFn);
     table.grantReadWriteData(executeTradeFn);
     table.grantReadWriteData(getTradeHistoryFn);
     table.grantReadWriteData(getTradeByIdFn);
+    table.grantReadWriteData(getLotSizeConfigFn);
+    table.grantReadWriteData(updateLotSizeConfigFn);
+    table.grantReadWriteData(getTargetAccountsConfigFn);
+    table.grantReadWriteData(updateTargetAccountsConfigFn);
+    table.grantReadWriteData(getSocketFeatureStatusFn);
+    table.grantReadWriteData(enableSocketFeatureFn);
 
     metacopierSecret.grantRead(executeTradeFn);
     metacopierSecret.grantRead(testConnectivityFn);
@@ -244,6 +282,7 @@ export class TradingCopierStack extends cdk.Stack {
         allowMethods: [
           apigwv2.CorsHttpMethod.GET,
           apigwv2.CorsHttpMethod.POST,
+          apigwv2.CorsHttpMethod.PUT,
           apigwv2.CorsHttpMethod.OPTIONS
         ],
         allowHeaders: ["Authorization", "Content-Type"],
@@ -290,6 +329,40 @@ export class TradingCopierStack extends cdk.Stack {
       path: "/admin/enable-socket-feature",
       methods: [apigwv2.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration("EnableSocketFeatureIntegration", enableSocketFeatureFn),
+      authorizer: jwtAuthorizer
+    });
+
+    httpApi.addRoutes({
+      path: "/management/lot-size-config",
+      methods: [apigwv2.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration("GetLotSizeConfigIntegration", getLotSizeConfigFn),
+      authorizer: jwtAuthorizer
+    });
+
+    httpApi.addRoutes({
+      path: "/management/lot-size-config",
+      methods: [apigwv2.HttpMethod.PUT],
+      integration: new integrations.HttpLambdaIntegration("UpdateLotSizeConfigIntegration", updateLotSizeConfigFn),
+      authorizer: jwtAuthorizer
+    });
+
+    httpApi.addRoutes({
+      path: "/management/target-accounts-config",
+      methods: [apigwv2.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration(
+        "GetTargetAccountsConfigIntegration",
+        getTargetAccountsConfigFn
+      ),
+      authorizer: jwtAuthorizer
+    });
+
+    httpApi.addRoutes({
+      path: "/management/target-accounts-config",
+      methods: [apigwv2.HttpMethod.PUT],
+      integration: new integrations.HttpLambdaIntegration(
+        "UpdateTargetAccountsConfigIntegration",
+        updateTargetAccountsConfigFn
+      ),
       authorizer: jwtAuthorizer
     });
 

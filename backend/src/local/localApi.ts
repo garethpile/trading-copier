@@ -15,6 +15,10 @@ import { handler as getTradeByIdHandler } from "../handlers/getTradeById";
 import { handler as testConnectivityHandler } from "../handlers/testConnectivity";
 import { handler as getSocketFeatureStatusHandler } from "../handlers/getSocketFeatureStatus";
 import { handler as enableSocketFeatureHandler } from "../handlers/enableSocketFeature";
+import { handler as getLotSizeConfigHandler } from "../handlers/getLotSizeConfig";
+import { handler as updateLotSizeConfigHandler } from "../handlers/updateLotSizeConfig";
+import { handler as getTargetAccountsConfigHandler } from "../handlers/getTargetAccountsConfig";
+import { handler as updateTargetAccountsConfigHandler } from "../handlers/updateTargetAccountsConfig";
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -23,7 +27,7 @@ app.use(express.json({ limit: "1mb" }));
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Allow-Origin", req.header("origin") ?? "*");
   res.setHeader("Vary", "Origin");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
   if (req.method === "OPTIONS") {
     res.status(204).send();
@@ -155,6 +159,10 @@ app.post("/execute-trade", invoke(executeTradeHandler as Handler));
 app.post("/connectivity-test", invoke(testConnectivityHandler as Handler));
 app.get("/admin/socket-feature-status", invoke(getSocketFeatureStatusHandler as Handler));
 app.post("/admin/enable-socket-feature", invoke(enableSocketFeatureHandler as Handler));
+app.get("/management/lot-size-config", invoke(getLotSizeConfigHandler as Handler));
+app.put("/management/lot-size-config", invoke(updateLotSizeConfigHandler as Handler));
+app.get("/management/target-accounts-config", invoke(getTargetAccountsConfigHandler as Handler));
+app.put("/management/target-accounts-config", invoke(updateTargetAccountsConfigHandler as Handler));
 app.get("/trade-history", invoke(getTradeHistoryHandler as Handler));
 app.get(
   "/trade/:signalId",

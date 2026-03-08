@@ -16,7 +16,7 @@ body {
 .container {
   max-width: 1080px;
   margin: 0 auto;
-  padding: 24px;
+  padding: max(24px, env(safe-area-inset-top)) 24px 24px;
 }
 
 .stack {
@@ -214,6 +214,76 @@ button:disabled {
   font-size: 1.1rem;
 }
 
+.request-toggle {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  text-align: left;
+  padding: 0;
+  width: 100%;
+}
+
+.request-toggle:hover {
+  background: transparent;
+}
+
+.collapse-icon {
+  color: #9ec2ff;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.collapsible-card .collapse-icon::before {
+  content: "▾";
+}
+
+.collapsible-card[open] .collapse-icon::before {
+  content: "▴";
+}
+
+.collapse-icon-button {
+  color: #9ec2ff;
+  font-size: 1rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.collapsible-card {
+  padding-top: 10px;
+}
+
+.collapsible-summary {
+  list-style: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 0 0 10px 0;
+}
+
+.collapsible-summary::-webkit-details-marker {
+  display: none;
+}
+
+.collapsible-summary h2 {
+  margin: 0;
+}
+
+.admin-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.admin-card-half {
+  min-width: 0;
+}
+
+.admin-card-full {
+  grid-column: 1 / -1;
+}
+
 .request-meta {
   color: #9bb2de;
   font-size: 0.9rem;
@@ -223,6 +293,12 @@ button:disabled {
   background: rgba(11, 27, 62, 0.9);
   padding: 10px;
   border-radius: 10px;
+}
+
+.request-grid > div {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .pill {
@@ -245,6 +321,11 @@ button:disabled {
   background: #163a7a;
   border-color: #5da4ff;
   color: #cde3ff;
+}
+
+.live-pill {
+  color: #5be081;
+  font-weight: 800;
 }
 
 .pill.warn {
@@ -270,6 +351,12 @@ button:disabled {
   padding: 8px 10px;
 }
 
+.leg-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .grid.two {
   display: grid;
   grid-template-columns: repeat(2, minmax(180px, 1fr));
@@ -293,15 +380,27 @@ td {
 }
 
 @media (max-width: 700px) {
+  .admin-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-card-full {
+    grid-column: auto;
+  }
+
   .grid.two {
     grid-template-columns: 1fr;
   }
 
   .container {
-    padding: 14px;
+    padding: max(14px, env(safe-area-inset-top)) 14px 14px;
   }
 
   .leg-row {
     grid-template-columns: 1fr;
+  }
+
+  .row {
+    flex-wrap: wrap;
   }
 }

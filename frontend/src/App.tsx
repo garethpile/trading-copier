@@ -8,6 +8,13 @@ import { SecuritySettings } from "./components/SecuritySettings";
 
 type View = "intake" | "history" | "admin" | "security";
 
+const pageTitle: Record<View, string> = {
+  intake: "Signal Intake",
+  history: "Trade History",
+  admin: "Admin",
+  security: "Security"
+};
+
 export default function App() {
   const [authed, setAuthed] = useState(false);
   const [view, setView] = useState<View>("intake");
@@ -83,6 +90,8 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      <h2>{pageTitle[view]}</h2>
 
       {view === "intake" ? <SignalIntakePage /> : null}
       {view === "history" ? <TradeHistoryPage /> : null}

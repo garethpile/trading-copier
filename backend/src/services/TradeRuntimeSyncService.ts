@@ -48,6 +48,8 @@ const extractRequestId = (position: Obj): number | undefined => {
 const extractPositionId = (position: Obj): string | undefined =>
   asString(position.id ?? position.positionId ?? position.ticket ?? position.orderId);
 
+const extractStopLoss = (position: Obj): number | undefined => asNumber(position.stopLoss ?? position.sl);
+
 const extractOrderType = (position: Obj, side: "BUY" | "SELL"): "Buy" | "Sell" => {
   const raw = asString(position.orderType ?? position.dealType ?? position.side ?? position.type)?.toLowerCase();
   if (raw?.includes("sell")) return "Sell";
@@ -68,6 +70,11 @@ export class TradeRuntimeSyncService {
     this.secretArn = process.env.METACOPIER_SECRET_ARN ?? "";
     this.envApiKey = process.env.METACOPIER_API_KEY?.trim() ?? "";
     this.envUserEmail = process.env.METACOPIER_USER_EMAIL?.trim() || undefined;
+  }
+
+  private nextRequestId(): number {
+    const epochSeconds = Math.floor(Date.now() / 1000) % 1_000_000;
+    return epochSeconds * 1000 + Math.floor(Math.random() * 1000);
   }
 
   private async getSecret(): Promise<MetaCopierSecret> {
@@ -167,7 +174,7 @@ export class TradeRuntimeSyncService {
         stopLoss: input.breakEvenPrice,
         takeProfit: asNumber(input.position.takeProfit) ?? 0,
         volume,
-        requestId: Math.floor(Math.random() * 1000)
+        requestId: this.nextRequestId()
       })
     });
 
@@ -207,6 +214,9 @@ export class TradeRuntimeSyncService {
         const legObj = toObj(leg) ?? {};
         const requestId = extractRequestId(legObj);
         const status = asString(legObj.status)?.toUpperCase();
+        const position =
+          requestId !== undefined ? openPositions.find((p) => extractRequestId(p) === requestId) : undefined;
+        const currentStopLoss = position ? extractStopLoss(position) : undefined;
         let runtimeState: "OPEN" | "CLOSED" | "UNKNOWN" = "UNKNOWN";
         if (status === "FAILED") {
           runtimeState = "CLOSED";
@@ -216,12 +226,14 @@ export class TradeRuntimeSyncService {
         return {
           ...legObj,
           ...(requestId !== undefined ? { requestId } : {}),
+          ...(currentStopLoss !== undefined ? { currentStopLoss } : {}),
           runtimeState
         };
       });
 
       const tp1 = normalizedLegs.find((l) => asNumber(l.leg) === 1 && asString(l.status) === "EXECUTED");
       const tp1Closed = tp1 ? asString(tp1.runtimeState) === "CLOSED" : false;
+      const tp1Price = tp1 ? asNumber(tp1.takeProfit) : undefined;
       const existingBe = toObj(providerResponse.breakeven) ?? {};
 
       let breakeven = existingBe;
@@ -234,6 +246,10 @@ export class TradeRuntimeSyncService {
           if (!legNo || legNo <= 1) continue;
           if (asString(leg.status) !== "EXECUTED") continue;
           if (asString(leg.runtimeState) !== "OPEN") continue;
+          if (tp1Price === undefined) {
+            failedLegs.push({ leg: legNo, reason: "tp1 takeProfit missing" });
+            continue;
+          }
           const requestId = extractRequestId(leg);
           if (requestId === undefined) {
             failedLegs.push({ leg: legNo, reason: "missing requestId" });
@@ -244,11 +260,14 @@ export class TradeRuntimeSyncService {
             failedLegs.push({ leg: legNo, reason: "open position not found" });
             continue;
           }
+          // Profit-lock SL: move 5% of the TP1 distance from entry toward TP1.
+          // BUY => slightly above entry, SELL => slightly below entry.
+          const profitLockStop = trade.entry + (tp1Price - trade.entry) * 0.05;
           const moved = await this.moveStopLossToBe({
             accountId: trade.targetAccount,
             position,
             side: trade.side,
-            breakEvenPrice: trade.entry
+            breakEvenPrice: profitLockStop
           });
           if (!moved.ok) {
             failedLegs.push({ leg: legNo, reason: moved.reason });
@@ -256,6 +275,7 @@ export class TradeRuntimeSyncService {
           }
           const positionId = extractPositionId(position);
           movedLegs.push({ leg: legNo, positionId: positionId ?? "-" });
+          leg.currentStopLoss = profitLockStop;
         }
 
         breakeven = {

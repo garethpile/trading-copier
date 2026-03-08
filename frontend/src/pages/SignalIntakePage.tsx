@@ -1,10 +1,11 @@
 import { useRef, useState } from "react";
-import { executeTrade, parseSignal } from "../services/api";
+import { executeTrade, fetchLotSizeConfig, fetchTargetAccountsConfig, parseSignal } from "../services/api";
 import { ExecuteTradeResponse, ParseSignalResponse } from "../types";
 import { ParsedTradeReview } from "../components/ParsedTradeReview";
 import { ExecutionResultPanel } from "../components/ExecutionResultPanel";
+import { useEffect } from "react";
 
-const configuredAccounts = (
+const fallbackAccounts = (
   import.meta.env.VITE_TARGET_ACCOUNTS ?? "a5231bf5-8713-44b6-846d-4c7f43a5bf30"
 )
   .split(",")
@@ -18,13 +19,35 @@ export function SignalIntakePage() {
   const [rawMessage, setRawMessage] = useState("");
   const [parseResult, setParseResult] = useState<ParseSignalResponse | null>(null);
   const [parseError, setParseError] = useState<string | undefined>();
+  const [accounts, setAccounts] = useState<string[]>(fallbackAccounts);
   const [targetAccount, setTargetAccount] = useState(
-    configuredAccounts[0] ?? "a5231bf5-8713-44b6-846d-4c7f43a5bf30"
+    fallbackAccounts[0] ?? "a5231bf5-8713-44b6-846d-4c7f43a5bf30"
   );
   const [lotSize, setLotSize] = useState(defaultLotSize);
+  const [lotSizeConfig, setLotSizeConfig] = useState<{ defaultLotSize: number; symbolLotSizes: Record<string, number> }>({
+    defaultLotSize,
+    symbolLotSizes: {}
+  });
   const [note, setNote] = useState("");
   const [executionResult, setExecutionResult] = useState<ExecuteTradeResponse | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    void fetchLotSizeConfig()
+      .then((config) => setLotSizeConfig({ defaultLotSize: config.defaultLotSize, symbolLotSizes: config.symbolLotSizes }))
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    void fetchTargetAccountsConfig()
+      .then((config) => {
+        if (config.accounts.length > 0) {
+          setAccounts(config.accounts);
+          setTargetAccount((prev: string) => (config.accounts.includes(prev) ? prev : config.accounts[0]));
+        }
+      })
+      .catch(() => undefined);
+  }, []);
 
   const handleParse = async () => {
     setParseError(undefined);
@@ -34,6 +57,11 @@ export function SignalIntakePage() {
       setLoading(true);
       const result = await parseSignal(rawMessage);
       setParseResult(result);
+      if (result.valid && result.trade) {
+        const symbol = result.trade.symbol.toUpperCase();
+        const resolvedLot = lotSizeConfig.symbolLotSizes[symbol] ?? lotSizeConfig.defaultLotSize;
+        setLotSize(resolvedLot);
+      }
     } catch (error) {
       setParseError(String(error));
       setParseResult(null);
@@ -139,7 +167,7 @@ export function SignalIntakePage() {
           targetAccount={targetAccount}
           lotSize={lotSize}
           note={note}
-          accounts={configuredAccounts}
+          accounts={accounts}
           onTargetAccountChange={setTargetAccount}
           onLotSizeChange={setLotSize}
           onNoteChange={setNote}

@@ -2,14 +2,22 @@ import { APIGatewayProxyHandlerV2 } from "aws-lambda";
 import { getUserIdFromEvent } from "../utils/auth";
 import { jsonResponse } from "../utils/http";
 import { MetaCopierAdminService } from "../services/MetaCopierAdminService";
+import { TradeRepository } from "../repositories/TradeRepository";
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   try {
-    getUserIdFromEvent(event);
+    const tableName = process.env.TRADE_SIGNALS_TABLE;
+    if (!tableName) {
+      return jsonResponse(500, { message: "TRADE_SIGNALS_TABLE not configured" });
+    }
+
+    const userId = getUserIdFromEvent(event);
+    const repository = new TradeRepository(tableName);
+    const accountConfig = await repository.getTargetAccountsConfig(userId);
 
     const accountId =
       event.queryStringParameters?.accountId ||
-      (process.env.ALLOWED_TARGET_ACCOUNTS ?? "").split(",").map((x) => x.trim()).filter(Boolean)[0];
+      accountConfig.accounts[0];
 
     if (!accountId) {
       return jsonResponse(400, { message: "accountId is required" });

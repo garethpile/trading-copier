@@ -6,6 +6,8 @@ import {
   ParseSignalResponse,
   SocketFeatureEnableResponse,
   SocketFeatureStatusResponse,
+  LotSizeConfig,
+  TargetAccountsConfig,
   TradeRecord
 } from "../types";
 
@@ -72,4 +74,26 @@ export const enableSocketFeature = async (accountId: string): Promise<SocketFeat
   callApi<SocketFeatureEnableResponse>("/admin/enable-socket-feature", {
     method: "POST",
     body: JSON.stringify({ accountId })
+  });
+
+export const fetchLotSizeConfig = async (): Promise<LotSizeConfig> =>
+  callApi<LotSizeConfig>("/management/lot-size-config", {
+    method: "GET"
+  });
+
+export const updateLotSizeConfig = async (config: LotSizeConfig): Promise<LotSizeConfig> =>
+  callApi<LotSizeConfig>("/management/lot-size-config", {
+    method: "PUT",
+    body: JSON.stringify(config)
+  });
+
+export const fetchTargetAccountsConfig = async (): Promise<TargetAccountsConfig> =>
+  callApi<TargetAccountsConfig>("/management/target-accounts-config", {
+    method: "GET"
+  });
+
+export const updateTargetAccountsConfig = async (config: TargetAccountsConfig): Promise<TargetAccountsConfig> =>
+  callApi<TargetAccountsConfig>("/management/target-accounts-config", {
+    method: "PUT",
+    body: JSON.stringify(config)
   });

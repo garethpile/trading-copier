@@ -7,19 +7,21 @@ import { getUserIdFromEvent } from "../utils/auth";
 import { jsonResponse } from "../utils/http";
 import { ExecuteTradeRequest } from "../models/types";
 
-const allowedAccounts = (process.env.ALLOWED_TARGET_ACCOUNTS ?? "a5231bf5-8713-44b6-846d-4c7f43a5bf30")
-  .split(",")
-  .map((v) => v.trim())
-  .filter(Boolean);
-
 const lotMin = Number(process.env.LOT_SIZE_MIN ?? "0.01");
 const lotMax = Number(process.env.LOT_SIZE_MAX ?? "50");
 const requireProtectiveLevels = (process.env.REQUIRE_PROTECTIVE_LEVELS ?? "true") === "true";
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   try {
+    const tableName = process.env.TRADE_SIGNALS_TABLE;
+    if (!tableName) {
+      return jsonResponse(500, { status: "FAILED", message: "TRADE_SIGNALS_TABLE not configured" });
+    }
+
     const userId = getUserIdFromEvent(event);
     const body = JSON.parse(event.body ?? "{}") as ExecuteTradeRequest;
+    const repository = new TradeRepository(tableName);
+    const accountConfig = await repository.getTargetAccountsConfig(userId);
 
     const parseResult = parseSignal(body.rawMessage ?? "");
     if (!parseResult.valid || !parseResult.trade) {
@@ -31,7 +33,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       });
     }
 
-    const validationErrors = validateExecutionRequest(body, allowedAccounts, {
+    const validationErrors = validateExecutionRequest(body, accountConfig.accounts, {
       min: lotMin,
       max: lotMax
     }, {
@@ -46,12 +48,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       });
     }
 
-    const tableName = process.env.TRADE_SIGNALS_TABLE;
-    if (!tableName) {
-      return jsonResponse(500, { status: "FAILED", message: "TRADE_SIGNALS_TABLE not configured" });
-    }
-
-    const repository = new TradeRepository(tableName);
     const service = new ExecutionService(repository);
 
     const result = await service.execute(userId, body, parseResult.warnings);

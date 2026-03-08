@@ -160,19 +160,32 @@ export class MetaCopierAdminService {
     const headers = await this.headers();
 
     const endpoint = `${this.baseUrl.replace(/\/$/, "")}/rest/api/v1/accounts/${accountId}/features`;
-    const socketTypeId = Number(process.env.METACOPIER_SOCKET_FEATURE_TYPE_ID ?? "26");
+    const configuredTypeId = Number(process.env.METACOPIER_SOCKET_FEATURE_TYPE_ID ?? "26");
+    const candidateTypeIds = Array.from(new Set([configuredTypeId, 25, 26].filter((v) => Number.isFinite(v) && v > 0)));
 
     try {
-      const response = await this.fetchWithTimeout(endpoint, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          type: { id: socketTypeId },
-          setting: { activateSocket: true }
-        })
-      });
-      const body = await this.readBody(response);
-      if (!response.ok) {
+      let lastFailure: { status: number; body: unknown; statusText: string; typeId: number } | undefined;
+
+      for (const typeId of candidateTypeIds) {
+        const response = await this.fetchWithTimeout(endpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            type: { id: typeId },
+            setting: { activateSocket: true }
+          })
+        });
+        const body = await this.readBody(response);
+
+        if (response.ok) {
+          return {
+            success: true,
+            accountId,
+            message: "Socket feature enabled",
+            response: body
+          };
+        }
+
         if (response.status === 400 || response.status === 409) {
           const featureStatus = await this.getSocketFeatureStatus(accountId);
           if (featureStatus.status === "ENABLED") {
@@ -188,19 +201,20 @@ export class MetaCopierAdminService {
             };
           }
         }
-        return {
-          success: false,
-          accountId,
-          message: `Enable socket failed: ${response.status}`,
-          response: body ?? response.statusText
+
+        lastFailure = {
+          status: response.status,
+          body,
+          statusText: response.statusText,
+          typeId
         };
       }
 
       return {
-        success: true,
+        success: false,
         accountId,
-        message: "Socket feature enabled",
-        response: body
+        message: `Enable socket failed: ${lastFailure?.status ?? 500}`,
+        response: lastFailure
       };
     } catch (error) {
       return {

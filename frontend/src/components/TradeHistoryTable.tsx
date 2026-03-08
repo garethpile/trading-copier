@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { TradeRecord } from "../types";
 
 type LegView = {
@@ -5,6 +6,7 @@ type LegView = {
   takeProfit: number;
   status: "EXECUTED" | "FAILED" | "UNKNOWN";
   runtimeState: "OPEN" | "CLOSED" | "UNKNOWN";
+  currentStopLoss?: number;
   executionId?: string;
   message?: string;
 };
@@ -35,6 +37,12 @@ const toLegs = (providerResponse: unknown): LegView[] => {
           : String(item.runtimeState ?? "UNKNOWN").toUpperCase() === "CLOSED"
             ? "CLOSED"
             : "UNKNOWN",
+      currentStopLoss:
+        typeof item.currentStopLoss === "number"
+          ? item.currentStopLoss
+          : typeof item.currentStopLoss === "string"
+            ? Number(item.currentStopLoss)
+            : undefined,
       executionId: typeof item.executionId === "string" ? item.executionId : undefined,
       message: typeof item.message === "string" ? item.message : undefined
     };
@@ -54,7 +62,7 @@ const requestPill = (item: TradeRecord): { label: string; className: string } =>
   if (isClosedRequest(item)) return { label: "CLOSED", className: "pill" };
   const status = item.status.toUpperCase();
   if (status === "EXECUTING") return { label: "IN FLIGHT", className: "pill warn" };
-  if (status === "EXECUTED") return { label: "LIVE", className: "pill ok" };
+  if (status === "EXECUTED") return { label: "LIVE", className: "pill ok live-pill" };
   if (status === "FAILED") return { label: "FAILED", className: "pill bad" };
   if (status === "REJECTED") return { label: "REJECTED", className: "pill bad" };
   return { label: status, className: "pill" };
@@ -83,6 +91,7 @@ export function TradeHistoryTable({
   filter: FilterMode;
   onFilterChange: (mode: FilterMode) => void;
 }) {
+  const [collapsedBySignal, setCollapsedBySignal] = useState<Record<string, boolean>>({});
   const filtered = items.filter((item) => (filter === "ACTIVE" ? !isClosedRequest(item) : isClosedRequest(item)));
 
   return (
@@ -121,60 +130,87 @@ export function TradeHistoryTable({
         const state = requestPill(item);
         const sideClass = item.side === "BUY" ? "side-buy" : "side-sell";
         const requestSideClass = item.side === "BUY" ? "request-buy" : "request-sell";
+        const collapsed = collapsedBySignal[item.signalId] ?? true;
 
         return (
           <article className={`card stack request-card ${requestSideClass}`} key={item.signalId}>
-            <div className="row spread">
-              <div>
-                <h4 className="request-title">
-                  {item.symbol} <span className={sideClass}>{item.side}</span>
-                </h4>
-                <div className="request-meta">{new Date(item.createdAt).toLocaleString()}</div>
-              </div>
-              <span className={state.className}>{state.label}</span>
-            </div>
-
-            <div className="grid two request-grid">
-              <div>
-                <strong>Signal ID:</strong> {item.signalId}
-              </div>
-              <div>
-                <strong>Account:</strong> {item.targetAccount}
-              </div>
-              <div>
-                <strong>Entry (ref):</strong> {item.entry}
-              </div>
-              <div>
-                <strong>Stop Loss:</strong> {item.stopLoss}
-              </div>
-              <div>
-                <strong>Lot Size:</strong> {item.lotSize}
-              </div>
-              <div>
-                <strong>Execution IDs:</strong> {item.executionId ?? "-"}
-              </div>
-            </div>
-
-            <div className="stack">
-              <strong>{filter === "ACTIVE" ? "Open Legs (Grouped per Request)" : "Closed Legs (Grouped per Request)"}</strong>
-              {legs.length === 0 ? (
-                <div className="leg-row">
-                  <span className="pill">N/A</span>
-                  <span>{filter === "ACTIVE" ? "No open legs." : "No closed legs."}</span>
+            <button
+              type="button"
+              className="request-toggle"
+              onClick={() =>
+                setCollapsedBySignal((prev) => ({
+                  ...prev,
+                  [item.signalId]: !collapsed
+                }))
+              }
+              aria-expanded={!collapsed}
+            >
+              <div className="row spread">
+                <div>
+                  <h4 className="request-title">
+                    {item.symbol} <span className={sideClass}>{item.side}</span>
+                  </h4>
+                  <div className="request-meta">{new Date(item.createdAt).toLocaleString()}</div>
                 </div>
-              ) : (
-                legs.map((leg) => (
-                  <div className="leg-row" key={`${item.signalId}-leg-${leg.leg}`}>
-                    <span className={legPillClass(leg)}>TP{leg.leg}</span>
-                    <span>TP: {leg.takeProfit}</span>
-                    <span>
-                      State: {leg.runtimeState} ({leg.status})
-                    </span>
-                    <span>Execution: {leg.executionId ?? "-"}</span>
+                <div className="row">
+                  <span className={state.className}>{state.label}</span>
+                  <span className="collapse-icon-button" aria-hidden="true">
+                    {collapsed ? "▾" : "▴"}
+                  </span>
+                </div>
+              </div>
+            </button>
+
+            {!collapsed ? (
+              <>
+                <div className="grid two request-grid">
+                  <div>
+                    <strong>Signal ID:</strong> {item.signalId}
                   </div>
-                ))
-              )}
-            </div>
+                  <div>
+                    <strong>Account:</strong> {item.targetAccount}
+                  </div>
+                  <div>
+                    <strong>Entry Price:</strong> {item.entry}
+                  </div>
+                  <div>
+                    <strong>Stop Loss:</strong> {item.stopLoss}
+                  </div>
+                  <div>
+                    <strong>Lot Size:</strong> {item.lotSize}
+                  </div>
+                  <div>
+                    <strong>Execution IDs:</strong> {item.executionId ?? "-"}
+                  </div>
+                  <div>
+                    <strong>Take Profit Levels:</strong> {item.takeProfits.join(", ")}
+                  </div>
+                </div>
+
+                <div className="stack">
+                  <strong>{filter === "ACTIVE" ? "Open Legs (Grouped per Request)" : "Closed Legs (Grouped per Request)"}</strong>
+                  {legs.length === 0 ? (
+                    <div className="leg-row">
+                      <span className="pill">N/A</span>
+                      <span>{filter === "ACTIVE" ? "No open legs." : "No closed legs."}</span>
+                    </div>
+                  ) : (
+                    legs.map((leg) => (
+                      <div className="leg-row" key={`${item.signalId}-leg-${leg.leg}`}>
+                        <span className={legPillClass(leg)}>TP{leg.leg}</span>
+                        <span>
+                          TP: {leg.takeProfit} | SL: {leg.currentStopLoss ?? item.stopLoss}
+                        </span>
+                        <span>
+                          State: {leg.runtimeState} ({leg.status})
+                        </span>
+                        <span>Execution: {leg.executionId ?? "-"}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </>
+            ) : null}
 
             {item.errorMessage ? <p className="error">{item.errorMessage}</p> : null}
           </article>

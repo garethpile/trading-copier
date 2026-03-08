@@ -73,6 +73,22 @@ export interface ConnectivityTestResult {
   response?: unknown;
 }
 
+export interface LotSizeConfig {
+  defaultLotSize: number;
+  symbolLotSizes: Record<string, number>;
+  updatedAt?: string;
+}
+
+export interface UpdateLotSizeConfigRequest {
+  defaultLotSize?: number;
+  symbolLotSizes?: Record<string, number>;
+}
+
+export interface TargetAccountsConfig {
+  accounts: string[];
+  updatedAt?: string;
+}
+
 export interface ExecutionProvider {
   executeTrade(input: {
     symbol: string;
