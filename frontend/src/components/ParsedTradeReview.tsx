@@ -42,6 +42,9 @@ export function ParsedTradeReview(props: Props) {
           <strong>Side:</strong> {trade.side}
         </div>
         <div>
+          <strong>Order Type:</strong> {trade.orderType}
+        </div>
+        <div>
           <strong>Entry (reference):</strong> {trade.entry}
         </div>
         <div>
@@ -67,7 +70,10 @@ export function ParsedTradeReview(props: Props) {
       ) : null}
 
       <div>
-        <strong>Execution mode:</strong> Market order (current price at execution time)
+        <strong>Execution mode:</strong>{" "}
+        {trade.orderType === "LIMIT"
+          ? "Limit order (entry price from signal)"
+          : "Market order (current price at execution time)"}
       </div>
 
       <label>

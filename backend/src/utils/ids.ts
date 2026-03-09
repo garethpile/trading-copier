@@ -8,6 +8,8 @@ export const makeSignalId = (createdAt: string): string => {
 export const makeDedupeKey = (input: {
   symbol: string;
   side: string;
+  orderType: string;
+  entry: number;
   stopLoss: number;
   takeProfits: number[];
   targetAccount: string;
@@ -16,6 +18,8 @@ export const makeDedupeKey = (input: {
   return [
     input.symbol,
     input.side,
+    input.orderType,
+    input.entry,
     input.stopLoss,
     ...input.takeProfits,
     input.targetAccount,

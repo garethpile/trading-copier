@@ -186,6 +186,9 @@ export function TradeHistoryTable({
                     <strong>Entry Price:</strong> {item.entry}
                   </div>
                   <div>
+                    <strong>Order Type:</strong> {item.orderType ?? "MARKET"}
+                  </div>
+                  <div>
                     <strong>Stop Loss:</strong> {item.stopLoss}
                   </div>
                   <div>

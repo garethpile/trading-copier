@@ -5,6 +5,9 @@ export const validateParsedTrade = (trade: ParsedTrade): string[] => {
 
   if (!trade.symbol) errors.push("symbol is required");
   if (trade.side !== "BUY" && trade.side !== "SELL") errors.push("side must be BUY or SELL");
+  if (trade.orderType !== "MARKET" && trade.orderType !== "LIMIT") {
+    errors.push("orderType must be MARKET or LIMIT");
+  }
   if (!Number.isFinite(trade.entry)) errors.push("entry must be numeric");
   if (!Number.isFinite(trade.stopLoss)) errors.push("stopLoss must be numeric");
   if (!Array.isArray(trade.takeProfits) || trade.takeProfits.length === 0) {

@@ -12,6 +12,8 @@ export class ExecutionService {
     const dedupeKey = makeDedupeKey({
       symbol: req.trade.symbol,
       side: req.trade.side,
+      orderType: req.trade.orderType,
+      entry: req.trade.entry,
       stopLoss: req.trade.stopLoss,
       takeProfits: req.trade.takeProfits,
       targetAccount: req.targetAccount,
@@ -31,6 +33,7 @@ export class ExecutionService {
       rawMessage: req.rawMessage,
       symbol: req.trade.symbol,
       side: req.trade.side,
+      orderType: req.trade.orderType,
       entry: req.trade.entry,
       stopLoss: req.trade.stopLoss,
       takeProfits: req.trade.takeProfits,
@@ -48,6 +51,10 @@ export class ExecutionService {
     await this.repository.createTrade(record);
 
     const provider = buildExecutionProvider();
+    const symbolConfig = await this.repository.getLotSizeConfig(userId);
+    const normalizedSymbol = req.trade.symbol.toUpperCase();
+    const configuredSymbol = symbolConfig.symbols[normalizedSymbol];
+    const destinationBrokerSymbol = configuredSymbol?.destinationBrokerSymbol || normalizedSymbol;
     const tpLevels = req.trade.takeProfits.filter((tp) => Number.isFinite(tp) && tp > 0);
     // MetaCopier enforces requestId <= 999.
     // Reserve a small sequential range so each TP leg has a unique requestId within one request.
@@ -67,8 +74,10 @@ export class ExecutionService {
       const legNote = req.note ? `TP${index + 1} ${req.note}` : `TP${index + 1}`;
       const requestId = requestIdBase + index;
       const result = await provider.executeTrade({
-        symbol: req.trade.symbol,
+        symbol: normalizedSymbol,
+        destinationBrokerSymbol,
         side: req.trade.side,
+        orderType: req.trade.orderType,
         entry: req.trade.entry,
         stopLoss: req.trade.stopLoss,
         takeProfits: [tp],
@@ -90,7 +99,7 @@ export class ExecutionService {
         leg: index + 1,
         takeProfit: tp,
         status: result.status,
-        requestId,
+        requestId: result.requestId ?? requestId,
         message: result.message
       };
 
@@ -123,6 +132,7 @@ export class ExecutionService {
         status: "EXECUTED",
         providerResponse: {
           mode: "MULTI_TP_LEGS",
+          destinationBrokerSymbol,
           legs: legResults
         },
         executionId: combinedExecutionId || undefined,
@@ -145,16 +155,20 @@ export class ExecutionService {
       status: "FAILED",
       providerResponse: {
         mode: "MULTI_TP_LEGS",
+        destinationBrokerSymbol,
         legs: legResults
       },
       errorMessage: `Executed ${successfulLegs.length}/${tpLevels.length} TP legs`
     });
 
+    const legFailureSummary = failedLegs.map((leg) => `TP${leg.leg}: ${leg.message}`).join(" | ");
+
     return {
       status: "FAILED" as const,
       signalId,
       provider: "MetaCopier",
-      message: `Executed ${successfulLegs.length}/${tpLevels.length} TP legs`
+      message: `Executed ${successfulLegs.length}/${tpLevels.length} TP legs${legFailureSummary ? ` - ${legFailureSummary}` : ""}`,
+      errors: failedLegs.map((leg) => `TP${leg.leg}: ${leg.message}`)
     };
   }
 }

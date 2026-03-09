@@ -19,6 +19,16 @@ export function ExecutionResultPanel({ result }: { result: ExecuteTradeResponse 
       <div>
         <strong>Message:</strong> {result.message}
       </div>
+      {result.errors?.length ? (
+        <div>
+          <strong>Leg Errors:</strong>
+          <ul>
+            {result.errors.map((error) => (
+              <li key={error}>{error}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
     </div>
   );
 }

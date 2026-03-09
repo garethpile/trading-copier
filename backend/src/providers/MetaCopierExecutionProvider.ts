@@ -5,6 +5,8 @@ interface MetaCopierSecret {
   apiKey: string;
 }
 
+type GenericObject = Record<string, unknown>;
+
 const toPlainJson = (value: unknown): unknown => {
   try {
     return JSON.parse(JSON.stringify(value));
@@ -21,7 +23,7 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
     private readonly secretArn: string,
     private readonly tradingBaseUrl: string,
     private readonly globalBaseUrl: string,
-    private readonly timeoutMs = Number(process.env.METACOPIER_REQUEST_TIMEOUT_MS ?? "3500")
+    private readonly timeoutMs = Number(process.env.METACOPIER_REQUEST_TIMEOUT_MS ?? "8000")
   ) {}
 
   private buildHeaders(apiKey: string): Record<string, string> {
@@ -80,9 +82,74 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
     }
   }
 
+  private isAbortError(error: unknown): boolean {
+    const message =
+      typeof error === "string"
+        ? error
+        : error instanceof Error
+          ? error.message
+          : JSON.stringify(error);
+    return message.toLowerCase().includes("aborted");
+  }
+
+  private toObject(value: unknown): GenericObject | undefined {
+    return value && typeof value === "object" ? (value as GenericObject) : undefined;
+  }
+
+  private asNumber(value: unknown): number | undefined {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string") {
+      const n = Number(value);
+      if (Number.isFinite(n)) return n;
+    }
+    return undefined;
+  }
+
+  private extractRequestId(position: GenericObject): number | undefined {
+    const providerResponse = this.toObject(position.providerResponse);
+    const nested = this.asNumber(providerResponse?.requestId);
+    if (nested !== undefined) return Math.floor(nested);
+    const direct = this.asNumber(position.requestId ?? position.clientRequestId ?? position.magicNumber);
+    if (direct !== undefined) return Math.floor(direct);
+    const comment = typeof position.comment === "string" ? position.comment : undefined;
+    if (!comment) return undefined;
+    const apiMatch = comment.match(/API\|(\d+)\|/);
+    if (apiMatch) return Number(apiMatch[1]);
+    return undefined;
+  }
+
+  private async findOpenPositionByRequestId(input: {
+    accountId: string;
+    requestId: number;
+    apiKey: string;
+  }): Promise<boolean> {
+    const endpoint = `${this.tradingBaseUrl.replace(/\/$/, "")}/rest/api/v1/accounts/${input.accountId}/positions`;
+    try {
+      const response = await this.fetchWithTimeout(endpoint, {
+        method: "GET",
+        headers: this.buildHeaders(input.apiKey)
+      });
+      if (!response.ok) return false;
+      const body = await this.readBody(response);
+      const bodyObj = this.toObject(body);
+      const positions = Array.isArray(body)
+        ? (body as GenericObject[])
+        : Array.isArray(bodyObj?.openPositions)
+          ? (bodyObj?.openPositions as GenericObject[])
+          : Array.isArray(bodyObj?.positions)
+            ? (bodyObj?.positions as GenericObject[])
+            : [];
+      return positions.some((p) => this.extractRequestId(p) === input.requestId);
+    } catch {
+      return false;
+    }
+  }
+
   async executeTrade(input: {
     symbol: string;
+    destinationBrokerSymbol?: string;
     side: "BUY" | "SELL";
+    orderType: "MARKET" | "LIMIT";
     entry: number;
     stopLoss: number;
     takeProfits: number[];
@@ -95,47 +162,117 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
 
     const requestId = input.requestId ?? Math.floor(Date.now() % 1000);
     const comment = input.note?.slice(0, 20);
+    const endpoint = `${this.tradingBaseUrl.replace(/\/$/, "")}/rest/api/v1/accounts/${input.targetAccount}/positions`;
+    const symbol = (input.destinationBrokerSymbol ?? input.symbol).trim().toUpperCase();
 
     try {
-      const endpoint = `${this.tradingBaseUrl.replace(/\/$/, "")}/rest/api/v1/accounts/${input.targetAccount}/positions`;
-      const response = await this.fetchWithTimeout(endpoint, {
-        method: "POST",
-        headers: this.buildHeaders(secret.apiKey),
-        body: JSON.stringify({
-          symbol: input.symbol,
-          orderType: input.side === "BUY" ? "Buy" : "Sell",
-          openPrice: 0,
-          stopLoss: input.stopLoss,
-          takeProfit: input.takeProfits[0] ?? 0,
-          volume: input.lotSize,
-          requestId,
-          ...(comment ? { comment } : {})
-        })
-      });
-      if (response.status !== 204) {
-        const body = await this.readBody(response);
-        return {
-          status: "FAILED",
-          message: `MetaCopier call failed: ${response.status}`,
-          providerResponse: {
-            status: response.status,
-            statusText: response.statusText,
-            data: body,
-            url: endpoint,
-            method: "POST"
+      let response: Response;
+      try {
+        const providerOrderType =
+          input.orderType === "LIMIT"
+            ? input.side === "BUY"
+              ? "BuyLimit"
+              : "SellLimit"
+            : input.side === "BUY"
+              ? "Buy"
+              : "Sell";
+        response = await this.fetchWithTimeout(endpoint, {
+          method: "POST",
+          headers: this.buildHeaders(secret.apiKey),
+          body: JSON.stringify({
+            symbol,
+            orderType: providerOrderType,
+            openPrice: input.orderType === "LIMIT" ? input.entry : 0,
+            stopLoss: input.stopLoss,
+            takeProfit: input.takeProfits[0] ?? 0,
+            volume: input.lotSize,
+            requestId,
+            ...(comment ? { comment } : {})
+          })
+        });
+      } catch (error) {
+        if (this.isAbortError(error)) {
+          const recovered = await this.findOpenPositionByRequestId({
+            accountId: input.targetAccount,
+            requestId,
+            apiKey: secret.apiKey
+          });
+          if (recovered) {
+            return {
+              status: "EXECUTED",
+              executionId: `mc_${Date.now()}`,
+              requestId,
+              providerResponse: {
+                requestId,
+                symbolUsed: symbol,
+                endpoint: `${this.tradingBaseUrl}/rest/api/v1/accounts/{accountId}/positions`,
+                executionMode: "MARKET",
+                recoveredAfterTimeout: true
+              },
+              message: "Trade likely executed (recovered after timeout)"
+            };
           }
+          console.error("MetaCopier executeTrade timeout", {
+            requestId,
+            symbol,
+            accountId: input.targetAccount,
+            url: endpoint
+          });
+          return {
+            status: "FAILED",
+            requestId,
+            message: "MetaCopier call timed out",
+            providerResponse: {
+              status: 408,
+              statusText: "Request Timeout",
+              data: String(error),
+              symbolAttempted: symbol,
+              requestId,
+              url: endpoint,
+              method: "POST"
+            }
+          };
+        }
+        throw error;
+      }
+
+      if (response.status === 204) {
+        return {
+          status: "EXECUTED",
+          executionId: `mc_${Date.now()}`,
+          requestId,
+          providerResponse: {
+            requestId,
+            symbolUsed: symbol,
+            endpoint: `${this.tradingBaseUrl}/rest/api/v1/accounts/{accountId}/positions`,
+            executionMode: "MARKET"
+          },
+          message: "Trade submitted successfully at market price"
         };
       }
 
+      const body = await this.readBody(response);
+      console.error("MetaCopier executeTrade provider failure", {
+        status: response.status,
+        statusText: response.statusText,
+        requestId,
+        symbol,
+        accountId: input.targetAccount,
+        response: toPlainJson(body)
+      });
       return {
-        status: "EXECUTED",
-        executionId: `mc_${Date.now()}`,
+        status: "FAILED",
+        requestId,
+        message: `MetaCopier call failed: ${response.status}`,
         providerResponse: {
+          status: response.status,
+          statusText: response.statusText,
+          data: body,
+          symbolAttempted: symbol,
           requestId,
-          endpoint: `${this.tradingBaseUrl}/rest/api/v1/accounts/{accountId}/positions`,
-          executionMode: "MARKET"
-        },
-        message: "Trade submitted successfully at market price"
+          url: endpoint,
+          method: "POST"
+        }
       };
     } catch (error) {
       console.error("MetaCopier executeTrade failed (non-axios)", String(error));

@@ -24,9 +24,10 @@ export function SignalIntakePage() {
     fallbackAccounts[0] ?? "a5231bf5-8713-44b6-846d-4c7f43a5bf30"
   );
   const [lotSize, setLotSize] = useState(defaultLotSize);
-  const [lotSizeConfig, setLotSizeConfig] = useState<{ defaultLotSize: number; symbolLotSizes: Record<string, number> }>({
+  const [lotSizeManuallyEdited, setLotSizeManuallyEdited] = useState(false);
+  const [lotSizeConfig, setLotSizeConfig] = useState<{ defaultLotSize: number; symbols: Record<string, { lotSize: number; destinationBrokerSymbol: string }> }>({
     defaultLotSize,
-    symbolLotSizes: {}
+    symbols: {}
   });
   const [note, setNote] = useState("");
   const [executionResult, setExecutionResult] = useState<ExecuteTradeResponse | null>(null);
@@ -34,9 +35,17 @@ export function SignalIntakePage() {
 
   useEffect(() => {
     void fetchLotSizeConfig()
-      .then((config) => setLotSizeConfig({ defaultLotSize: config.defaultLotSize, symbolLotSizes: config.symbolLotSizes }))
+      .then((config) => setLotSizeConfig({ defaultLotSize: config.defaultLotSize, symbols: config.symbols }))
       .catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (!parseResult?.valid || !parseResult.trade) return;
+    if (lotSizeManuallyEdited) return;
+    const symbol = parseResult.trade.symbol.toUpperCase();
+    const resolvedLot = lotSizeConfig.symbols[symbol]?.lotSize ?? lotSizeConfig.defaultLotSize;
+    setLotSize(resolvedLot);
+  }, [parseResult, lotSizeConfig, lotSizeManuallyEdited]);
 
   useEffect(() => {
     void fetchTargetAccountsConfig()
@@ -57,9 +66,10 @@ export function SignalIntakePage() {
       setLoading(true);
       const result = await parseSignal(rawMessage);
       setParseResult(result);
+      setLotSizeManuallyEdited(false);
       if (result.valid && result.trade) {
         const symbol = result.trade.symbol.toUpperCase();
-        const resolvedLot = lotSizeConfig.symbolLotSizes[symbol] ?? lotSizeConfig.defaultLotSize;
+        const resolvedLot = lotSizeConfig.symbols[symbol]?.lotSize ?? lotSizeConfig.defaultLotSize;
         setLotSize(resolvedLot);
       }
     } catch (error) {
@@ -169,7 +179,10 @@ export function SignalIntakePage() {
           note={note}
           accounts={accounts}
           onTargetAccountChange={setTargetAccount}
-          onLotSizeChange={setLotSize}
+          onLotSizeChange={(value) => {
+            setLotSize(value);
+            setLotSizeManuallyEdited(true);
+          }}
           onNoteChange={setNote}
           onExecute={handleExecute}
           onCancel={() => setParseResult(null)}

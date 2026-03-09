@@ -11,10 +11,14 @@ import {
 import {
   ConnectivityTestResponse,
   LotSizeConfig,
+  SymbolConfig,
   SocketFeatureEnableResponse,
   SocketFeatureStatusResponse,
   TargetAccountsConfig
 } from "../types";
+
+const sortSymbolConfigs = (input: Record<string, SymbolConfig>): Record<string, SymbolConfig> =>
+  Object.fromEntries(Object.entries(input).sort(([a], [b]) => a.localeCompare(b)));
 
 function CollapsibleCard({
   title,
@@ -52,6 +56,7 @@ export function AdminPage() {
   const [lotConfig, setLotConfig] = useState<LotSizeConfig | null>(null);
   const [newPair, setNewPair] = useState("");
   const [newPairLotSize, setNewPairLotSize] = useState("0.01");
+  const [newDestinationBrokerSymbol, setNewDestinationBrokerSymbol] = useState("");
 
   const [loading, setLoading] = useState(false);
   const isSocketEnabled = status?.status === "ENABLED";
@@ -73,7 +78,12 @@ export function AdminPage() {
 
   useEffect(() => {
     void fetchLotSizeConfig()
-      .then(setLotConfig)
+      .then((config) =>
+        setLotConfig({
+          ...config,
+          symbols: sortSymbolConfigs(config.symbols)
+        })
+      )
       .catch((e) => setManagementError(String(e)));
   }, []);
 
@@ -282,7 +292,7 @@ export function AdminPage() {
           ) : null}
         </CollapsibleCard>
 
-        <CollapsibleCard title="Management - Lot Sizes" className="admin-card-full">
+        <CollapsibleCard title="Symbol Management" className="admin-card-full">
         {lotConfig ? (
           <>
             <label>
@@ -305,30 +315,53 @@ export function AdminPage() {
               />
             </label>
             <div className="stack">
-              <strong>Pair Lot Sizes</strong>
-              {Object.entries(lotConfig.symbolLotSizes)
+              <strong>Pair Symbol Mapping</strong>
+              {Object.entries(lotConfig.symbols)
                 .sort(([a], [b]) => a.localeCompare(b))
-                .map(([symbol, lot]) => (
+                .map(([symbol, symbolConfig]) => (
                   <div className="row" key={symbol}>
                     <input value={symbol} readOnly />
                     <input
                       type="number"
                       min="0.01"
                       step="0.01"
-                      value={lot}
+                      value={symbolConfig.lotSize}
+                      onChange={(e) =>
+                  setLotConfig((prev) =>
+                    prev
+                      ? {
+                          ...prev,
+                          symbols: sortSymbolConfigs({
+                            ...prev.symbols,
+                            [symbol]: {
+                              ...prev.symbols[symbol],
+                              lotSize: Number(e.target.value)
+                            }
+                          })
+                        }
+                      : prev
+                  )
+                      }
+                    />
+                    <input
+                      value={symbolConfig.destinationBrokerSymbol}
                       onChange={(e) =>
                         setLotConfig((prev) =>
                           prev
                             ? {
                                 ...prev,
-                                symbolLotSizes: {
-                                  ...prev.symbolLotSizes,
-                                  [symbol]: Number(e.target.value)
-                                }
+                                symbols: sortSymbolConfigs({
+                                  ...prev.symbols,
+                                  [symbol]: {
+                                    ...prev.symbols[symbol],
+                                    destinationBrokerSymbol: e.target.value.toUpperCase()
+                                  }
+                                })
                               }
                             : prev
                         )
                       }
+                      placeholder="Destination Broker"
                     />
                     <button
                       type="button"
@@ -336,11 +369,11 @@ export function AdminPage() {
                       onClick={() =>
                         setLotConfig((prev) => {
                           if (!prev) return prev;
-                          const next = { ...prev.symbolLotSizes };
+                          const next = { ...prev.symbols };
                           delete next[symbol];
                           return {
                             ...prev,
-                            symbolLotSizes: next
+                            symbols: sortSymbolConfigs(next)
                           };
                         })
                       }
@@ -363,25 +396,35 @@ export function AdminPage() {
                 value={newPairLotSize}
                 onChange={(e) => setNewPairLotSize(e.target.value)}
               />
+              <input
+                placeholder="Destination Broker (e.g. GBPUSD+)"
+                value={newDestinationBrokerSymbol}
+                onChange={(e) => setNewDestinationBrokerSymbol(e.target.value.toUpperCase())}
+              />
               <button
                 type="button"
                 className="ghost"
                 onClick={() => {
                   const symbol = newPair.trim().toUpperCase();
                   const lot = Number(newPairLotSize);
-                  if (!symbol || !Number.isFinite(lot)) return;
+                  const destinationBrokerSymbol = newDestinationBrokerSymbol.trim().toUpperCase();
+                  if (!symbol || !Number.isFinite(lot) || !destinationBrokerSymbol) return;
                   setLotConfig((prev) =>
                     prev
                       ? {
                           ...prev,
-                          symbolLotSizes: {
-                            ...prev.symbolLotSizes,
-                            [symbol]: lot
-                          }
+                          symbols: sortSymbolConfigs({
+                            ...prev.symbols,
+                            [symbol]: {
+                              lotSize: lot,
+                              destinationBrokerSymbol
+                            }
+                          })
                         }
                       : prev
                   );
                   setNewPair("");
+                  setNewDestinationBrokerSymbol("");
                 }}
               >
                 Add Pair
@@ -395,9 +438,15 @@ export function AdminPage() {
                   setLoading(true);
                   setManagementError(undefined);
                   setManagementMessage(undefined);
-                  const saved = await updateLotSizeConfig(lotConfig);
-                  setLotConfig(saved);
-                  setManagementMessage("Lot size config saved");
+                  const saved = await updateLotSizeConfig({
+                    ...lotConfig,
+                    symbols: sortSymbolConfigs(lotConfig.symbols)
+                  });
+                  setLotConfig({
+                    ...saved,
+                    symbols: sortSymbolConfigs(saved.symbols)
+                  });
+                  setManagementMessage("Symbol config saved");
                 } catch (e) {
                   setManagementError(String(e));
                 } finally {
@@ -406,7 +455,7 @@ export function AdminPage() {
               }}
               disabled={loading}
             >
-              Save Lot Sizes
+              Save Symbol Management
             </button>
           </>
         ) : (

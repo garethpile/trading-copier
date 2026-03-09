@@ -1,8 +1,10 @@
 export type TradeSide = "BUY" | "SELL";
+export type TradeOrderType = "MARKET" | "LIMIT";
 
 export interface ParsedTrade {
   symbol: string;
   side: TradeSide;
+  orderType: TradeOrderType;
   entry: number;
   stopLoss: number;
   takeProfits: number[];
@@ -38,6 +40,7 @@ export interface TradeRecord {
   signalId: string;
   symbol: string;
   side: TradeSide;
+  orderType?: TradeOrderType;
   entry: number;
   stopLoss: number;
   takeProfits: number[];
@@ -75,8 +78,13 @@ export interface SocketFeatureEnableResponse {
 
 export interface LotSizeConfig {
   defaultLotSize: number;
-  symbolLotSizes: Record<string, number>;
+  symbols: Record<string, SymbolConfig>;
   updatedAt?: string;
+}
+
+export interface SymbolConfig {
+  lotSize: number;
+  destinationBrokerSymbol: string;
 }
 
 export interface TargetAccountsConfig {

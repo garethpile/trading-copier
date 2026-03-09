@@ -4,7 +4,9 @@ import { MetaCopierExecutionProvider } from "./MetaCopierExecutionProvider";
 class MockExecutionProvider implements ExecutionProvider {
   async executeTrade(_input: {
     symbol: string;
+    destinationBrokerSymbol?: string;
     side: "BUY" | "SELL";
+    orderType: "MARKET" | "LIMIT";
     entry: number;
     stopLoss: number;
     takeProfits: number[];
@@ -15,14 +17,17 @@ class MockExecutionProvider implements ExecutionProvider {
   }): Promise<{
     status: "EXECUTED";
     executionId: string;
+    requestId: number;
     providerResponse: unknown;
     message: string;
   }> {
     const executionId = `local_exec_${Date.now()}`;
+    const requestId = _input.requestId ?? Math.floor(Math.random() * 1000);
     return {
       status: "EXECUTED",
       executionId,
-      providerResponse: { executionId, provider: "MockExecutionProvider" },
+      requestId,
+      providerResponse: { executionId, requestId, provider: "MockExecutionProvider" },
       message: "Trade executed successfully (mock provider)"
     };
   }

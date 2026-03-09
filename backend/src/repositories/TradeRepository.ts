@@ -9,8 +9,33 @@ import {
   QueryCommand,
   UpdateCommand
 } from "@aws-sdk/lib-dynamodb";
-import { LotSizeConfig, TargetAccountsConfig, TradeRecord, TradeStatus } from "../models/types";
-import { DEFAULT_FALLBACK_LOT_SIZE, DEFAULT_SYMBOL_LOT_SIZES } from "../services/lotSizeDefaults";
+import { LotSizeConfig, SymbolConfig, TargetAccountsConfig, TradeRecord, TradeStatus } from "../models/types";
+import { DEFAULT_FALLBACK_LOT_SIZE, DEFAULT_SYMBOL_CONFIGS } from "../services/lotSizeDefaults";
+
+const normalizeSymbol = (value: string): string => value.trim().toUpperCase();
+
+const toSymbolConfig = (symbol: string, value: unknown): SymbolConfig | undefined => {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return {
+      lotSize: value,
+      destinationBrokerSymbol: `${symbol}+`
+    };
+  }
+  if (!value || typeof value !== "object") return undefined;
+  const obj = value as { lotSize?: unknown; destinationBrokerSymbol?: unknown };
+  const lotSize =
+    typeof obj.lotSize === "number" && Number.isFinite(obj.lotSize)
+      ? obj.lotSize
+      : typeof obj.lotSize === "string" && Number.isFinite(Number(obj.lotSize))
+        ? Number(obj.lotSize)
+        : undefined;
+  if (lotSize === undefined) return undefined;
+  const destinationBrokerSymbol =
+    typeof obj.destinationBrokerSymbol === "string" && obj.destinationBrokerSymbol.trim()
+      ? obj.destinationBrokerSymbol.trim().toUpperCase()
+      : `${symbol}+`;
+  return { lotSize, destinationBrokerSymbol };
+};
 
 export class DuplicateTradeError extends Error {}
 
@@ -185,6 +210,7 @@ export class TradeRepository {
     const item = out.Item as
       | {
           defaultLotSize?: number;
+          symbols?: Record<string, unknown>;
           symbolLotSizes?: Record<string, number>;
           updatedAt?: string;
         }
@@ -193,8 +219,19 @@ export class TradeRepository {
     if (!item) {
       return {
         defaultLotSize: DEFAULT_FALLBACK_LOT_SIZE,
-        symbolLotSizes: { ...DEFAULT_SYMBOL_LOT_SIZES }
+        symbols: { ...DEFAULT_SYMBOL_CONFIGS }
       };
+    }
+
+    const rawSymbols = item.symbols ?? item.symbolLotSizes ?? {};
+    const symbols: Record<string, SymbolConfig> = {};
+    for (const [rawSymbol, value] of Object.entries(rawSymbols)) {
+      const symbol = normalizeSymbol(rawSymbol);
+      if (!symbol) continue;
+      const config = toSymbolConfig(symbol, value);
+      if (config) {
+        symbols[symbol] = config;
+      }
     }
 
     return {
@@ -202,7 +239,7 @@ export class TradeRepository {
         typeof item.defaultLotSize === "number" && Number.isFinite(item.defaultLotSize)
           ? item.defaultLotSize
           : DEFAULT_FALLBACK_LOT_SIZE,
-      symbolLotSizes: item.symbolLotSizes ?? {},
+      symbols,
       updatedAt: item.updatedAt
     };
   }
@@ -220,7 +257,7 @@ export class TradeRepository {
           entityType: "SETTINGS_LOT_SIZES",
           userId,
           defaultLotSize: config.defaultLotSize,
-          symbolLotSizes: config.symbolLotSizes,
+          symbols: config.symbols,
           updatedAt: config.updatedAt ?? new Date().toISOString()
         }
       })

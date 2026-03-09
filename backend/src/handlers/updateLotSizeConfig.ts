@@ -19,6 +19,7 @@ const lotSizeRange = () => ({
 });
 
 const normalizeSymbol = (symbol: string): string => symbol.trim().toUpperCase();
+const normalizeDestinationSymbol = (symbol: string): string => symbol.trim().toUpperCase();
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   try {
@@ -39,17 +40,24 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       errors.push(`defaultLotSize must be between ${range.min} and ${range.max}`);
     }
 
-    const nextMap: Record<string, number> = {};
-    const rawMap = body.symbolLotSizes ?? current.symbolLotSizes;
-    for (const [rawSymbol, rawLot] of Object.entries(rawMap)) {
+    const nextMap: Record<string, { lotSize: number; destinationBrokerSymbol: string }> = {};
+    const rawMap = body.symbols ?? current.symbols;
+    for (const [rawSymbol, rawConfig] of Object.entries(rawMap)) {
       const symbol = normalizeSymbol(rawSymbol);
       if (!symbol) continue;
-      const lot = toNumber(rawLot);
+      const lot = toNumber((rawConfig as { lotSize?: unknown })?.lotSize);
       if (lot === undefined || lot < range.min || lot > range.max) {
         errors.push(`lot size for ${symbol} must be between ${range.min} and ${range.max}`);
         continue;
       }
-      nextMap[symbol] = lot;
+      const destinationBrokerSymbol = normalizeDestinationSymbol(
+        String((rawConfig as { destinationBrokerSymbol?: unknown })?.destinationBrokerSymbol ?? "")
+      );
+      if (!destinationBrokerSymbol) {
+        errors.push(`destination broker symbol is required for ${symbol}`);
+        continue;
+      }
+      nextMap[symbol] = { lotSize: lot, destinationBrokerSymbol };
     }
 
     if (errors.length > 0 || nextDefault === undefined) {
@@ -58,7 +66,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     const next = {
       defaultLotSize: nextDefault,
-      symbolLotSizes: nextMap,
+      symbols: nextMap,
       updatedAt: new Date().toISOString()
     };
 
@@ -68,4 +76,3 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return jsonResponse(500, { message: "Failed to update lot size config", error: String(error) });
   }
 };
-

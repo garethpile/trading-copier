@@ -1,4 +1,4 @@
-import { ParseSignalResponse, ParsedTrade, TradeSide } from "../models/types";
+import { ParseSignalResponse, ParsedTrade, TradeOrderType, TradeSide } from "../models/types";
 
 const stripDecorators = (line: string): string =>
   line
@@ -23,17 +23,21 @@ export const parseSignal = (rawMessage: string): ParseSignalResponse => {
 
   let symbol: string | undefined;
   let side: TradeSide | undefined;
+  let orderType: TradeOrderType = "MARKET";
   let entry: number | undefined;
   let stopLoss: number | undefined;
   const tps: Array<{ index: number; value: number }> = [];
   let comment: string | undefined;
 
   for (const line of lines) {
-    const entryLineMatch = line.match(/^([A-Z0-9]{3,10})\s*\|\s*(BUY|SELL)\s+([0-9]+(?:\.[0-9]+)?)$/i);
+    const entryLineMatch = line.match(
+      /^([A-Z0-9]{3,10})\s*\|\s*(BUY|SELL)(?:\s+(LIMIT))?\s+([0-9]+(?:\.[0-9]+)?)$/i
+    );
     if (entryLineMatch) {
       symbol = entryLineMatch[1].toUpperCase();
       side = entryLineMatch[2].toUpperCase() as TradeSide;
-      entry = parseNumber(entryLineMatch[3]);
+      orderType = entryLineMatch[3] ? "LIMIT" : "MARKET";
+      entry = parseNumber(entryLineMatch[4]);
       continue;
     }
 
@@ -97,6 +101,7 @@ export const parseSignal = (rawMessage: string): ParseSignalResponse => {
     ? {
         symbol: symbol!,
         side: side!,
+        orderType,
         entry: entry!,
         stopLoss: stopLoss!,
         takeProfits,

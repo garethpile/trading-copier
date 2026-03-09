@@ -1,8 +1,10 @@
 export type TradeSide = "BUY" | "SELL";
+export type TradeOrderType = "MARKET" | "LIMIT";
 
 export interface ParsedTrade {
   symbol: string;
   side: TradeSide;
+  orderType: TradeOrderType;
   entry: number;
   stopLoss: number;
   takeProfits: number[];
@@ -41,6 +43,7 @@ export interface TradeRecord {
   rawMessage: string;
   symbol: string;
   side: TradeSide;
+  orderType?: TradeOrderType;
   entry: number;
   stopLoss: number;
   takeProfits: number[];
@@ -62,6 +65,7 @@ export interface TradeRecord {
 export interface TradeExecutionResult {
   status: "EXECUTED" | "FAILED";
   executionId?: string;
+  requestId?: number;
   providerResponse?: unknown;
   message: string;
 }
@@ -75,13 +79,18 @@ export interface ConnectivityTestResult {
 
 export interface LotSizeConfig {
   defaultLotSize: number;
-  symbolLotSizes: Record<string, number>;
+  symbols: Record<string, SymbolConfig>;
   updatedAt?: string;
+}
+
+export interface SymbolConfig {
+  lotSize: number;
+  destinationBrokerSymbol: string;
 }
 
 export interface UpdateLotSizeConfigRequest {
   defaultLotSize?: number;
-  symbolLotSizes?: Record<string, number>;
+  symbols?: Record<string, SymbolConfig>;
 }
 
 export interface TargetAccountsConfig {
@@ -92,7 +101,9 @@ export interface TargetAccountsConfig {
 export interface ExecutionProvider {
   executeTrade(input: {
     symbol: string;
+    destinationBrokerSymbol?: string;
     side: TradeSide;
+    orderType: TradeOrderType;
     entry: number;
     stopLoss: number;
     takeProfits: number[];
