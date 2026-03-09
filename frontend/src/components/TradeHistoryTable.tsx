@@ -50,15 +50,27 @@ const toLegs = (providerResponse: unknown): LegView[] => {
 };
 
 const isClosedRequest = (item: TradeRecord): boolean => {
-  const status = item.status.toUpperCase();
-  if (status === "FAILED" || status === "REJECTED") return true;
   const legs = toLegs(item.providerResponse);
-  if (legs.length === 0) return false;
-  const activeLegExists = legs.some((leg) => leg.runtimeState !== "CLOSED" && leg.status === "EXECUTED");
-  return !activeLegExists;
+  if (legs.length > 0) {
+    const activeLegExists = legs.some((leg) => leg.runtimeState !== "CLOSED" && leg.status === "EXECUTED");
+    return !activeLegExists;
+  }
+
+  const status = item.status.toUpperCase();
+  return status === "FAILED" || status === "REJECTED";
 };
 
 const requestPill = (item: TradeRecord): { label: string; className: string } => {
+  const legs = toLegs(item.providerResponse);
+  if (legs.length > 0) {
+    const hasOpenExecutedLeg = legs.some((leg) => leg.status === "EXECUTED" && leg.runtimeState !== "CLOSED");
+    const hasFailedLeg = legs.some((leg) => leg.status === "FAILED");
+    if (hasOpenExecutedLeg) {
+      return hasFailedLeg ? { label: "PARTIAL", className: "pill warn" } : { label: "LIVE", className: "pill ok live-pill" };
+    }
+    return hasFailedLeg ? { label: "FAILED", className: "pill bad" } : { label: "CLOSED", className: "pill" };
+  }
+
   if (isClosedRequest(item)) return { label: "CLOSED", className: "pill" };
   const status = item.status.toUpperCase();
   if (status === "EXECUTING") return { label: "IN FLIGHT", className: "pill warn" };
