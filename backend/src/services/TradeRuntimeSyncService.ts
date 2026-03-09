@@ -73,8 +73,8 @@ export class TradeRuntimeSyncService {
   }
 
   private nextRequestId(): number {
-    const epochSeconds = Math.floor(Date.now() / 1000) % 1_000_000;
-    return epochSeconds * 1000 + Math.floor(Math.random() * 1000);
+    // MetaCopier validates requestId <= 999.
+    return Math.floor(Math.random() * 1000);
   }
 
   private async getSecret(): Promise<MetaCopierSecret> {

@@ -2,11 +2,9 @@ import { FormEvent, useState } from "react";
 import {
   confirmLoginChallenge,
   confirmPasswordReset,
-  confirmRegistration,
   isGoogleSignInConfigured,
   login,
   loginWithGoogle,
-  register,
   requestPasswordReset
 } from "../services/auth";
 
@@ -14,7 +12,7 @@ interface Props {
   onAuthenticated: () => void;
 }
 
-type Mode = "signin" | "register" | "reset";
+type Mode = "signin" | "reset";
 
 const getErrorMessage = (error: unknown): string => {
   if (error instanceof Error) return error.message;
@@ -28,7 +26,6 @@ export function LoginForm({ onAuthenticated }: Props) {
   const [mfaCode, setMfaCode] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [code, setCode] = useState("");
-  const [registerPendingConfirm, setRegisterPendingConfirm] = useState(false);
   const [resetPendingConfirm, setResetPendingConfirm] = useState(false);
   const [message, setMessage] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
@@ -52,29 +49,6 @@ export function LoginForm({ onAuthenticated }: Props) {
       }
       setSigninNextStep(result.nextStep);
       setMessage(result.message);
-    } catch (e) {
-      setError(getErrorMessage(e));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleRegister = async (event: FormEvent) => {
-    event.preventDefault();
-    resetStatus();
-    setLoading(true);
-    try {
-      if (!registerPendingConfirm) {
-        await register(identifier, password);
-        setRegisterPendingConfirm(true);
-        setMessage("Verification code sent. Enter it below to complete registration.");
-      } else {
-        await confirmRegistration(identifier, code);
-        setRegisterPendingConfirm(false);
-        setMode("signin");
-        setMessage("Registration complete. You can now sign in.");
-        setCode("");
-      }
     } catch (e) {
       setError(getErrorMessage(e));
     } finally {
@@ -108,7 +82,6 @@ export function LoginForm({ onAuthenticated }: Props) {
 
   const setModeState = (next: Mode) => {
     setMode(next);
-    setRegisterPendingConfirm(false);
     setResetPendingConfirm(false);
     setSigninNextStep(undefined);
     setCode("");
@@ -123,9 +96,6 @@ export function LoginForm({ onAuthenticated }: Props) {
       <div className="pill-group">
         <button type="button" className={`pill-btn ${mode === "signin" ? "active" : ""}`} onClick={() => setModeState("signin")}>
           Sign In
-        </button>
-        <button type="button" className={`pill-btn ${mode === "register" ? "active" : ""}`} onClick={() => setModeState("register")}>
-          Register
         </button>
         <button type="button" className={`pill-btn ${mode === "reset" ? "active" : ""}`} onClick={() => setModeState("reset")}>
           Reset Password
@@ -221,38 +191,6 @@ export function LoginForm({ onAuthenticated }: Props) {
               <span>Sign in with Google</span>
             </button>
           ) : null}
-        </form>
-      ) : null}
-
-      {mode === "register" ? (
-        <form onSubmit={handleRegister} className="stack">
-          <label>
-            Email or Mobile
-            <input
-              placeholder="you@example.com or +447700900123"
-              value={identifier}
-              onChange={(e) => setIdentifier(e.target.value)}
-              required
-            />
-          </label>
-          {!registerPendingConfirm ? (
-            <label>
-              Password
-              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-            </label>
-          ) : (
-            <label>
-              Verification Code
-              <input value={code} onChange={(e) => setCode(e.target.value)} required />
-            </label>
-          )}
-          <button disabled={loading}>
-            {loading
-              ? "Submitting..."
-              : registerPendingConfirm
-                ? "Confirm Registration"
-                : "Create Account"}
-          </button>
         </form>
       ) : null}
 

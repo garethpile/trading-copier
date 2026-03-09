@@ -49,10 +49,10 @@ export class ExecutionService {
 
     const provider = buildExecutionProvider();
     const tpLevels = req.trade.takeProfits.filter((tp) => Number.isFinite(tp) && tp > 0);
-    // Use a high-uniqueness requestId base to avoid collisions between parallel requests.
-    // Keep within 32-bit signed integer range for broad API compatibility.
-    const epochSeconds = Math.floor(Date.now() / 1000) % 1_000_000;
-    const requestIdBase = epochSeconds * 1000 + Math.floor(Math.random() * 1000);
+    // MetaCopier enforces requestId <= 999.
+    // Reserve a small sequential range so each TP leg has a unique requestId within one request.
+    const maxBase = Math.max(0, 999 - Math.max(0, tpLevels.length - 1));
+    const requestIdBase = Math.floor(Math.random() * (maxBase + 1));
     const legResults: Array<{
       leg: number;
       takeProfit: number;
