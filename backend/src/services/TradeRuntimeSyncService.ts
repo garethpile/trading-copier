@@ -64,12 +64,14 @@ export class TradeRuntimeSyncService {
   private readonly secretArn: string;
   private readonly envApiKey: string;
   private readonly envUserEmail?: string;
+  private readonly requestTimeoutMs: number;
 
   constructor(private readonly repository: TradeRepository) {
     this.baseUrl = process.env.METACOPIER_BASE_URL ?? "https://api-london.metacopier.io";
     this.secretArn = process.env.METACOPIER_SECRET_ARN ?? "";
     this.envApiKey = process.env.METACOPIER_API_KEY?.trim() ?? "";
     this.envUserEmail = process.env.METACOPIER_USER_EMAIL?.trim() || undefined;
+    this.requestTimeoutMs = Number(process.env.METACOPIER_REQUEST_TIMEOUT_MS ?? "3000");
   }
 
   private nextRequestId(): number {
@@ -105,17 +107,23 @@ export class TradeRuntimeSyncService {
   }
 
   private async fetchJson(url: string, init: RequestInit): Promise<{ ok: boolean; status: number; body: unknown }> {
-    const response = await fetch(url, init);
-    const text = await response.text();
-    let body: unknown = null;
-    if (text) {
-      try {
-        body = JSON.parse(text);
-      } catch {
-        body = text;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), Math.max(500, this.requestTimeoutMs));
+    try {
+      const response = await fetch(url, { ...init, signal: controller.signal });
+      const text = await response.text();
+      let body: unknown = null;
+      if (text) {
+        try {
+          body = JSON.parse(text);
+        } catch {
+          body = text;
+        }
       }
+      return { ok: response.ok, status: response.status, body };
+    } finally {
+      clearTimeout(timeout);
     }
-    return { ok: response.ok, status: response.status, body };
   }
 
   private async loadOpenPositionsByAccount(

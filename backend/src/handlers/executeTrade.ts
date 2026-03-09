@@ -60,6 +60,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       });
     }
 
+    console.error("Execute trade failed", error);
     return jsonResponse(500, {
       status: "FAILED",
       message: "Unexpected execution error",

@@ -63,8 +63,7 @@ export class ExecutionService {
       providerResponse?: unknown;
     }> = [];
 
-    for (let index = 0; index < tpLevels.length; index += 1) {
-      const tp = tpLevels[index];
+    const legPromises = tpLevels.map(async (tp, index) => {
       const legNote = req.note ? `TP${index + 1} ${req.note}` : `TP${index + 1}`;
       const requestId = requestIdBase + index;
       const result = await provider.executeTrade({
@@ -102,8 +101,11 @@ export class ExecutionService {
         legRecord.providerResponse = result.providerResponse;
       }
 
-      legResults.push(legRecord);
-    }
+      return legRecord;
+    });
+
+    const resolvedLegs = await Promise.all(legPromises);
+    legResults.push(...resolvedLegs.sort((a, b) => a.leg - b.leg));
 
     const failedLegs = legResults.filter((leg) => leg.status === "FAILED");
     const successfulLegs = legResults.filter((leg) => leg.status === "EXECUTED");

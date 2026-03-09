@@ -21,7 +21,7 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
     private readonly secretArn: string,
     private readonly tradingBaseUrl: string,
     private readonly globalBaseUrl: string,
-    private readonly timeoutMs = 30000
+    private readonly timeoutMs = Number(process.env.METACOPIER_REQUEST_TIMEOUT_MS ?? "3500")
   ) {}
 
   private buildHeaders(apiKey: string): Record<string, string> {
