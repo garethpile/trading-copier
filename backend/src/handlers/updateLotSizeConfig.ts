@@ -40,7 +40,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       errors.push(`defaultLotSize must be between ${range.min} and ${range.max}`);
     }
 
-    const nextMap: Record<string, { lotSize: number; destinationBrokerSymbol: string }> = {};
+    const nextMap: Record<
+      string,
+      { lotSize: number; destinationBrokerSymbol: string; accountDestinationSymbols?: Record<string, string> }
+    > = {};
     const rawMap = body.symbols ?? current.symbols;
     for (const [rawSymbol, rawConfig] of Object.entries(rawMap)) {
       const symbol = normalizeSymbol(rawSymbol);
@@ -57,7 +60,30 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         errors.push(`destination broker symbol is required for ${symbol}`);
         continue;
       }
-      nextMap[symbol] = { lotSize: lot, destinationBrokerSymbol };
+      const accountDestinationSymbolsInput =
+        (rawConfig as { accountDestinationSymbols?: unknown })?.accountDestinationSymbols;
+      const accountDestinationSymbols: Record<string, string> = {};
+      if (accountDestinationSymbolsInput && typeof accountDestinationSymbolsInput === "object") {
+        for (const [rawAccountId, rawMappedSymbol] of Object.entries(
+          accountDestinationSymbolsInput as Record<string, unknown>
+        )) {
+          const accountId = String(rawAccountId).trim();
+          if (!accountId) continue;
+          const mappedSymbol = normalizeDestinationSymbol(String(rawMappedSymbol ?? ""));
+          if (!mappedSymbol) {
+            errors.push(`account destination broker symbol is required for ${symbol} (${accountId})`);
+            continue;
+          }
+          accountDestinationSymbols[accountId] = mappedSymbol;
+        }
+      }
+      nextMap[symbol] = {
+        lotSize: lot,
+        destinationBrokerSymbol,
+        ...(Object.keys(accountDestinationSymbols).length > 0
+          ? { accountDestinationSymbols }
+          : {})
+      };
     }
 
     if (errors.length > 0 || nextDefault === undefined) {

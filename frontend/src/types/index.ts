@@ -85,9 +85,12 @@ export interface LotSizeConfig {
 export interface SymbolConfig {
   lotSize: number;
   destinationBrokerSymbol: string;
+  accountDestinationSymbols?: Record<string, string>;
 }
 
 export interface TargetAccountsConfig {
   accounts: string[];
+  executionMode?: "DEMO" | "LIVE";
+  modeAccounts?: Partial<Record<"DEMO" | "LIVE", string>>;
   updatedAt?: string;
 }

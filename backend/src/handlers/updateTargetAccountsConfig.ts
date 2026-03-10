@@ -1,4 +1,5 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
+import { TargetAccountsConfig } from "../models/types";
 import { TradeRepository } from "../repositories/TradeRepository";
 import { getUserIdFromEvent } from "../utils/auth";
 import { jsonResponse } from "../utils/http";
@@ -11,7 +12,13 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     const userId = getUserIdFromEvent(event);
-    const body = event.body ? (JSON.parse(event.body) as { accounts?: unknown }) : {};
+    const body = event.body
+      ? (JSON.parse(event.body) as {
+          accounts?: unknown;
+          executionMode?: unknown;
+          modeAccounts?: unknown;
+        })
+      : {};
     const accounts = Array.isArray(body.accounts)
       ? body.accounts.map((v) => String(v).trim()).filter(Boolean)
       : [];
@@ -21,9 +28,28 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     const unique = Array.from(new Set(accounts));
+    const executionMode = body.executionMode === "LIVE" ? "LIVE" : "DEMO";
+    const modeAccountsInput =
+      body.modeAccounts && typeof body.modeAccounts === "object"
+        ? (body.modeAccounts as Partial<Record<"DEMO" | "LIVE", string>>)
+        : {};
+    const demoAccount =
+      modeAccountsInput.DEMO && unique.includes(String(modeAccountsInput.DEMO))
+        ? String(modeAccountsInput.DEMO)
+        : unique[0];
+    const liveAccount =
+      modeAccountsInput.LIVE && unique.includes(String(modeAccountsInput.LIVE))
+        ? String(modeAccountsInput.LIVE)
+        : unique[1] ?? unique[0];
+
     const repository = new TradeRepository(tableName);
-    const next = {
+    const next: TargetAccountsConfig = {
       accounts: unique,
+      executionMode,
+      modeAccounts: {
+        DEMO: demoAccount,
+        LIVE: liveAccount
+      },
       updatedAt: new Date().toISOString()
     };
     await repository.putTargetAccountsConfig(userId, next);
@@ -32,4 +58,3 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return jsonResponse(500, { message: "Failed to update target accounts config", error: String(error) });
   }
 };
-

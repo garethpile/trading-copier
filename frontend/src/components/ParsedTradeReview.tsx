@@ -4,32 +4,13 @@ interface Props {
   trade: ParsedTrade;
   warnings: string[];
   targetAccount: string;
+  executionMode: "DEMO" | "LIVE";
   lotSize: number;
   note: string;
-  accounts: string[];
-  onTargetAccountChange: (value: string) => void;
-  onLotSizeChange: (value: number) => void;
-  onNoteChange: (value: string) => void;
-  onExecute: () => Promise<void>;
-  onCancel: () => void;
-  disabled?: boolean;
 }
 
 export function ParsedTradeReview(props: Props) {
-  const {
-    trade,
-    warnings,
-    targetAccount,
-    lotSize,
-    note,
-    accounts,
-    onTargetAccountChange,
-    onLotSizeChange,
-    onNoteChange,
-    onExecute,
-    onCancel,
-    disabled
-  } = props;
+  const { trade, warnings, targetAccount, executionMode, lotSize, note } = props;
 
   return (
     <div className="card stack">
@@ -76,40 +57,19 @@ export function ParsedTradeReview(props: Props) {
           : "Market order (current price at execution time)"}
       </div>
 
-      <label>
-        Target Account
-        <select value={targetAccount} onChange={(e) => onTargetAccountChange(e.target.value)}>
-          {accounts.map((account) => (
-            <option key={account} value={account}>
-              {account}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      <label>
-        Lot Size
-        <input
-          type="number"
-          step="0.01"
-          value={lotSize}
-          onChange={(e) => onLotSizeChange(Number(e.target.value))}
-          min={0.01}
-        />
-      </label>
-
-      <label>
-        Note
-        <input value={note} onChange={(e) => onNoteChange(e.target.value)} placeholder="Optional note" />
-      </label>
-
-      <div className="row">
-        <button onClick={onExecute} disabled={disabled}>
-          Approve & Execute
-        </button>
-        <button onClick={onCancel} className="ghost" type="button">
-          Cancel
-        </button>
+      <div className="grid two">
+        <div>
+          <strong>Execution Mode:</strong> {executionMode}
+        </div>
+        <div>
+          <strong>Target Account:</strong> {targetAccount}
+        </div>
+        <div>
+          <strong>Lot Size:</strong> {lotSize}
+        </div>
+        <div>
+          <strong>Note:</strong> {note || "-"}
+        </div>
       </div>
     </div>
   );

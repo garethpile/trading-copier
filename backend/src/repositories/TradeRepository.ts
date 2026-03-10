@@ -4,12 +4,21 @@ import {
 } from "@aws-sdk/client-dynamodb";
 import {
   DynamoDBDocumentClient,
+  DeleteCommand,
   GetCommand,
   PutCommand,
   QueryCommand,
   UpdateCommand
 } from "@aws-sdk/lib-dynamodb";
-import { LotSizeConfig, SymbolConfig, TargetAccountsConfig, TradeRecord, TradeStatus } from "../models/types";
+import {
+  LotSizeConfig,
+  SymbolConfig,
+  TelegramProfile,
+  TargetAccountsConfig,
+  TelegramDraft,
+  TradeRecord,
+  TradeStatus
+} from "../models/types";
 import { DEFAULT_FALLBACK_LOT_SIZE, DEFAULT_SYMBOL_CONFIGS } from "../services/lotSizeDefaults";
 
 const normalizeSymbol = (value: string): string => value.trim().toUpperCase();
@@ -22,7 +31,11 @@ const toSymbolConfig = (symbol: string, value: unknown): SymbolConfig | undefine
     };
   }
   if (!value || typeof value !== "object") return undefined;
-  const obj = value as { lotSize?: unknown; destinationBrokerSymbol?: unknown };
+  const obj = value as {
+    lotSize?: unknown;
+    destinationBrokerSymbol?: unknown;
+    accountDestinationSymbols?: unknown;
+  };
   const lotSize =
     typeof obj.lotSize === "number" && Number.isFinite(obj.lotSize)
       ? obj.lotSize
@@ -34,7 +47,25 @@ const toSymbolConfig = (symbol: string, value: unknown): SymbolConfig | undefine
     typeof obj.destinationBrokerSymbol === "string" && obj.destinationBrokerSymbol.trim()
       ? obj.destinationBrokerSymbol.trim().toUpperCase()
       : `${symbol}+`;
-  return { lotSize, destinationBrokerSymbol };
+  const rawAccountDestinationSymbols =
+    obj.accountDestinationSymbols && typeof obj.accountDestinationSymbols === "object"
+      ? (obj.accountDestinationSymbols as Record<string, unknown>)
+      : {};
+  const accountDestinationSymbols: Record<string, string> = {};
+  for (const [rawAccountId, rawDestinationSymbol] of Object.entries(rawAccountDestinationSymbols)) {
+    const accountId = String(rawAccountId).trim();
+    const destination =
+      typeof rawDestinationSymbol === "string" ? rawDestinationSymbol.trim().toUpperCase() : "";
+    if (!accountId || !destination) continue;
+    accountDestinationSymbols[accountId] = destination;
+  }
+  return {
+    lotSize,
+    destinationBrokerSymbol,
+    ...(Object.keys(accountDestinationSymbols).length > 0
+      ? { accountDestinationSymbols }
+      : {})
+  };
 };
 
 export class DuplicateTradeError extends Error {}
@@ -279,15 +310,36 @@ export class TradeRepository {
       })
     );
 
-    const item = out.Item as { accounts?: string[]; updatedAt?: string } | undefined;
+    const item = out.Item as {
+      accounts?: string[];
+      executionMode?: "DEMO" | "LIVE";
+      modeAccounts?: Partial<Record<"DEMO" | "LIVE", string>>;
+      updatedAt?: string;
+    } | undefined;
     if (!item || !Array.isArray(item.accounts) || item.accounts.length === 0) {
       return {
-        accounts: fallbackAccounts
+        accounts: fallbackAccounts,
+        executionMode: "DEMO",
+        modeAccounts: {
+          DEMO: fallbackAccounts[0],
+          LIVE: fallbackAccounts[1] ?? fallbackAccounts[0]
+        }
       };
     }
 
+    const accounts = item.accounts.map((v) => String(v).trim()).filter(Boolean);
+    const modeAccounts = item.modeAccounts ?? {};
+    const demoAccount = modeAccounts.DEMO && accounts.includes(modeAccounts.DEMO) ? modeAccounts.DEMO : accounts[0];
+    const liveCandidate = modeAccounts.LIVE && accounts.includes(modeAccounts.LIVE) ? modeAccounts.LIVE : accounts[1] ?? accounts[0];
+    const executionMode = item.executionMode === "LIVE" ? "LIVE" : "DEMO";
+
     return {
-      accounts: item.accounts.map((v) => String(v).trim()).filter(Boolean),
+      accounts,
+      executionMode,
+      modeAccounts: {
+        DEMO: demoAccount,
+        LIVE: liveCandidate
+      },
       updatedAt: item.updatedAt
     };
   }
@@ -305,9 +357,113 @@ export class TradeRepository {
           entityType: "SETTINGS_TARGET_ACCOUNTS",
           userId,
           accounts: config.accounts,
+          executionMode: config.executionMode ?? "DEMO",
+          modeAccounts: config.modeAccounts ?? {},
           updatedAt: config.updatedAt ?? new Date().toISOString()
         }
       })
     );
+  }
+
+  async putTelegramDraft(draft: TelegramDraft): Promise<void> {
+    const pk = `TELEGRAM#${draft.chatId}`;
+    const sk = "DRAFT#LATEST";
+    await this.doc.send(
+      new PutCommand({
+        TableName: this.tableName,
+        Item: {
+          pk,
+          sk,
+          entityType: "TELEGRAM_DRAFT",
+          ...draft
+        }
+      })
+    );
+  }
+
+  async getTelegramDraft(chatId: string): Promise<TelegramDraft | undefined> {
+    const pk = `TELEGRAM#${chatId}`;
+    const sk = "DRAFT#LATEST";
+    const out = await this.doc.send(
+      new GetCommand({
+        TableName: this.tableName,
+        Key: { pk, sk }
+      })
+    );
+    return out.Item as TelegramDraft | undefined;
+  }
+
+  async deleteTelegramDraft(chatId: string): Promise<void> {
+    const pk = `TELEGRAM#${chatId}`;
+    const sk = "DRAFT#LATEST";
+    await this.doc.send(new DeleteCommand({ TableName: this.tableName, Key: { pk, sk } }));
+  }
+
+  async getTelegramProfile(chatId: string): Promise<TelegramProfile | undefined> {
+    const pk = `TELEGRAM#${chatId}`;
+    const sk = "SETTINGS#PROFILE";
+    const out = await this.doc.send(new GetCommand({ TableName: this.tableName, Key: { pk, sk } }));
+    const item = out.Item as {
+      chatId?: string;
+      lotOverride?: number;
+      lastProcessedUpdateId?: number;
+      updatedAt?: string;
+    } | undefined;
+    if (!item) return undefined;
+    return {
+      chatId,
+      lotOverride: typeof item.lotOverride === "number" && Number.isFinite(item.lotOverride) ? item.lotOverride : undefined,
+      lastProcessedUpdateId:
+        typeof item.lastProcessedUpdateId === "number" && Number.isFinite(item.lastProcessedUpdateId)
+          ? item.lastProcessedUpdateId
+          : undefined,
+      updatedAt: item.updatedAt ?? new Date().toISOString()
+    };
+  }
+
+  async putTelegramProfile(profile: TelegramProfile): Promise<void> {
+    const pk = `TELEGRAM#${profile.chatId}`;
+    const sk = "SETTINGS#PROFILE";
+    await this.doc.send(
+      new PutCommand({
+        TableName: this.tableName,
+        Item: {
+          pk,
+          sk,
+          entityType: "TELEGRAM_PROFILE",
+          chatId: profile.chatId,
+          lotOverride: profile.lotOverride ?? null,
+          lastProcessedUpdateId: profile.lastProcessedUpdateId ?? null,
+          updatedAt: profile.updatedAt
+        }
+      })
+    );
+  }
+
+  async claimTelegramUpdate(chatId: string, updateId: number): Promise<boolean> {
+    const pk = `TELEGRAM#${chatId}`;
+    const sk = "SETTINGS#PROFILE";
+    try {
+      await this.doc.send(
+        new UpdateCommand({
+          TableName: this.tableName,
+          Key: { pk, sk },
+          UpdateExpression:
+            "SET chatId = :chatId, lastProcessedUpdateId = :updateId, updatedAt = :updatedAt",
+          ConditionExpression: "attribute_not_exists(lastProcessedUpdateId) OR lastProcessedUpdateId < :updateId",
+          ExpressionAttributeValues: {
+            ":chatId": chatId,
+            ":updateId": updateId,
+            ":updatedAt": new Date().toISOString()
+          }
+        })
+      );
+      return true;
+    } catch (error) {
+      if (error instanceof ConditionalCheckFailedException) {
+        return false;
+      }
+      throw error;
+    }
   }
 }

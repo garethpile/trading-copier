@@ -250,6 +250,21 @@ export class TradingCopierStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10)
     });
 
+    const telegramWebhookFn = new lambda.Function(this, "TelegramWebhookFn", {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: "handlers/telegramWebhook.handler",
+      code: lambdaCode,
+      environment: {
+        ...commonEnv,
+        TELEGRAM_BOT_TOKEN: process.env.TELEGRAM_BOT_TOKEN ?? "",
+        TELEGRAM_WEBHOOK_SECRET: process.env.TELEGRAM_WEBHOOK_SECRET ?? "",
+        TELEGRAM_ALLOWED_CHAT_IDS: process.env.TELEGRAM_ALLOWED_CHAT_IDS ?? "",
+        TELEGRAM_ALLOWED_USER_IDS: process.env.TELEGRAM_ALLOWED_USER_IDS ?? "",
+        TELEGRAM_CONFIG_USER_ID: process.env.TELEGRAM_CONFIG_USER_ID ?? ""
+      },
+      timeout: cdk.Duration.seconds(20)
+    });
+
     table.grantReadWriteData(parseSignalFn);
     table.grantReadWriteData(executeTradeFn);
     table.grantReadWriteData(getTradeHistoryFn);
@@ -260,12 +275,14 @@ export class TradingCopierStack extends cdk.Stack {
     table.grantReadWriteData(updateTargetAccountsConfigFn);
     table.grantReadWriteData(getSocketFeatureStatusFn);
     table.grantReadWriteData(enableSocketFeatureFn);
+    table.grantReadWriteData(telegramWebhookFn);
 
     metacopierSecret.grantRead(executeTradeFn);
     metacopierSecret.grantRead(testConnectivityFn);
     metacopierSecret.grantRead(getSocketFeatureStatusFn);
     metacopierSecret.grantRead(enableSocketFeatureFn);
     metacopierSecret.grantRead(getTradeHistoryFn);
+    metacopierSecret.grantRead(telegramWebhookFn);
 
     const corsOrigins = (
       process.env.CORS_ALLOW_ORIGINS?.trim() ||
@@ -378,6 +395,12 @@ export class TradingCopierStack extends cdk.Stack {
       methods: [apigwv2.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration("GetTradeByIdIntegration", getTradeByIdFn),
       authorizer: jwtAuthorizer
+    });
+
+    httpApi.addRoutes({
+      path: "/telegram/webhook",
+      methods: [apigwv2.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration("TelegramWebhookIntegration", telegramWebhookFn)
     });
 
     new cdk.CfnOutput(this, "ApiBaseUrl", {

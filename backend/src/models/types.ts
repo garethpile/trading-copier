@@ -86,6 +86,7 @@ export interface LotSizeConfig {
 export interface SymbolConfig {
   lotSize: number;
   destinationBrokerSymbol: string;
+  accountDestinationSymbols?: Record<string, string>;
 }
 
 export interface UpdateLotSizeConfigRequest {
@@ -95,7 +96,31 @@ export interface UpdateLotSizeConfigRequest {
 
 export interface TargetAccountsConfig {
   accounts: string[];
+  executionMode?: ExecutionMode;
+  modeAccounts?: Partial<Record<ExecutionMode, string>>;
   updatedAt?: string;
+}
+
+export type ExecutionMode = "DEMO" | "LIVE";
+
+export interface TelegramDraft {
+  chatId: string;
+  rawMessage: string;
+  trade: ParsedTrade;
+  warnings: string[];
+  targetAccount: string;
+  lotSize: number;
+  destinationBrokerSymbol: string;
+  note?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TelegramProfile {
+  chatId: string;
+  lotOverride?: number;
+  lastProcessedUpdateId?: number;
+  updatedAt: string;
 }
 
 export interface ExecutionProvider {

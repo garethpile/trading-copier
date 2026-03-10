@@ -6,7 +6,12 @@ import { makeDedupeKey, makeSignalId } from "../utils/ids";
 export class ExecutionService {
   constructor(private readonly repository: TradeRepository) {}
 
-  async execute(userId: string, req: ExecuteTradeRequest, parseWarnings: string[]) {
+  async execute(
+    userId: string,
+    req: ExecuteTradeRequest,
+    parseWarnings: string[],
+    options?: { configOwnerUserId?: string }
+  ) {
     const createdAt = new Date().toISOString();
     const signalId = makeSignalId(createdAt);
     const dedupeKey = makeDedupeKey({
@@ -51,10 +56,14 @@ export class ExecutionService {
     await this.repository.createTrade(record);
 
     const provider = buildExecutionProvider();
-    const symbolConfig = await this.repository.getLotSizeConfig(userId);
+    const configOwnerUserId = options?.configOwnerUserId ?? userId;
+    const symbolConfig = await this.repository.getLotSizeConfig(configOwnerUserId);
     const normalizedSymbol = req.trade.symbol.toUpperCase();
     const configuredSymbol = symbolConfig.symbols[normalizedSymbol];
-    const destinationBrokerSymbol = configuredSymbol?.destinationBrokerSymbol || normalizedSymbol;
+    const destinationBrokerSymbol =
+      configuredSymbol?.accountDestinationSymbols?.[req.targetAccount] ||
+      configuredSymbol?.destinationBrokerSymbol ||
+      normalizedSymbol;
     const tpLevels = req.trade.takeProfits.filter((tp) => Number.isFinite(tp) && tp > 0);
     // MetaCopier enforces requestId <= 999.
     // Reserve a small sequential range so each TP leg has a unique requestId within one request.
@@ -144,7 +153,12 @@ export class ExecutionService {
         signalId,
         executionId: combinedExecutionId || undefined,
         provider: "MetaCopier",
-        message: `Executed ${successfulLegs.length}/${tpLevels.length} TP legs`
+        message: `Executed ${successfulLegs.length}/${tpLevels.length} TP legs`,
+        providerResponse: {
+          mode: "MULTI_TP_LEGS",
+          destinationBrokerSymbol,
+          legs: legResults
+        }
       };
     }
 
@@ -168,6 +182,11 @@ export class ExecutionService {
       signalId,
       provider: "MetaCopier",
       message: `Executed ${successfulLegs.length}/${tpLevels.length} TP legs${legFailureSummary ? ` - ${legFailureSummary}` : ""}`,
+      providerResponse: {
+        mode: "MULTI_TP_LEGS",
+        destinationBrokerSymbol,
+        legs: legResults
+      },
       errors: failedLegs.map((leg) => `TP${leg.leg}: ${leg.message}`)
     };
   }

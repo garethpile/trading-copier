@@ -20,11 +20,9 @@ export function SignalIntakePage() {
   const [parseResult, setParseResult] = useState<ParseSignalResponse | null>(null);
   const [parseError, setParseError] = useState<string | undefined>();
   const [accounts, setAccounts] = useState<string[]>(fallbackAccounts);
-  const [targetAccount, setTargetAccount] = useState(
-    fallbackAccounts[0] ?? "a5231bf5-8713-44b6-846d-4c7f43a5bf30"
-  );
+  const [modeAccounts, setModeAccounts] = useState<Partial<Record<"DEMO" | "LIVE", string>>>({});
+  const [executionMode, setExecutionMode] = useState<"DEMO" | "LIVE">("DEMO");
   const [lotSize, setLotSize] = useState(defaultLotSize);
-  const [lotSizeManuallyEdited, setLotSizeManuallyEdited] = useState(false);
   const [lotSizeConfig, setLotSizeConfig] = useState<{ defaultLotSize: number; symbols: Record<string, { lotSize: number; destinationBrokerSymbol: string }> }>({
     defaultLotSize,
     symbols: {}
@@ -41,36 +39,60 @@ export function SignalIntakePage() {
 
   useEffect(() => {
     if (!parseResult?.valid || !parseResult.trade) return;
-    if (lotSizeManuallyEdited) return;
     const symbol = parseResult.trade.symbol.toUpperCase();
     const resolvedLot = lotSizeConfig.symbols[symbol]?.lotSize ?? lotSizeConfig.defaultLotSize;
     setLotSize(resolvedLot);
-  }, [parseResult, lotSizeConfig, lotSizeManuallyEdited]);
+  }, [parseResult, lotSizeConfig]);
 
   useEffect(() => {
     void fetchTargetAccountsConfig()
       .then((config) => {
         if (config.accounts.length > 0) {
           setAccounts(config.accounts);
-          setTargetAccount((prev: string) => (config.accounts.includes(prev) ? prev : config.accounts[0]));
+          setModeAccounts(config.modeAccounts ?? {});
+          setExecutionMode(config.executionMode ?? "DEMO");
         }
       })
       .catch(() => undefined);
   }, []);
 
+  const selectedAccount =
+    modeAccounts[executionMode] ??
+    (executionMode === "LIVE" ? accounts[1] ?? accounts[0] : accounts[0]) ??
+    "";
+
   const handleParse = async () => {
     setParseError(undefined);
     setExecutionResult(null);
+
+    if (!selectedAccount) {
+      setParseError("Select DEMO or LIVE account before submitting.");
+      return;
+    }
 
     try {
       setLoading(true);
       const result = await parseSignal(rawMessage);
       setParseResult(result);
-      setLotSizeManuallyEdited(false);
       if (result.valid && result.trade) {
         const symbol = result.trade.symbol.toUpperCase();
         const resolvedLot = lotSizeConfig.symbols[symbol]?.lotSize ?? lotSizeConfig.defaultLotSize;
         setLotSize(resolvedLot);
+        try {
+          const executeResult = await executeTrade({
+            rawMessage,
+            trade: result.trade,
+            targetAccount: selectedAccount,
+            lotSize: resolvedLot,
+            note: note.trim() ? note.trim() : undefined
+          });
+          setExecutionResult(executeResult);
+        } catch (error) {
+          setExecutionResult({
+            status: "FAILED",
+            message: String(error)
+          });
+        }
       }
     } catch (error) {
       setParseError(String(error));
@@ -92,33 +114,23 @@ export function SignalIntakePage() {
     }
   };
 
-  const handleExecute = async () => {
-    if (!parseResult?.valid || !parseResult.trade) return;
-
-    try {
-      setLoading(true);
-      const result = await executeTrade({
-        rawMessage,
-        trade: parseResult.trade,
-        targetAccount,
-        lotSize,
-        note: note.trim() ? note.trim() : undefined
-      });
-      setExecutionResult(result);
-    } catch (error) {
-      setExecutionResult({
-        status: "FAILED",
-        message: String(error)
-      });
-    } finally {
-      setLoading(false);
-    }
-  };
-
   return (
     <div className="stack">
       <div className="card stack">
         <h2>Signal Intake</h2>
+        <div className="row">
+          <label style={{ minWidth: 180 }}>
+            Account
+            <select value={executionMode} onChange={(e) => setExecutionMode(e.target.value === "LIVE" ? "LIVE" : "DEMO")}>
+              <option value="DEMO">DEMO</option>
+              <option value="LIVE">LIVE</option>
+            </select>
+          </label>
+          <label style={{ minWidth: 340 }}>
+            Selected Account ID
+            <input value={selectedAccount || "Not configured"} readOnly />
+          </label>
+        </div>
         <label>
           Raw Signal Message
           <textarea
@@ -141,8 +153,8 @@ export function SignalIntakePage() {
           <button onClick={handlePasteFromClipboard} type="button" className="ghost">
             Paste from Clipboard
           </button>
-          <button onClick={handleParse} disabled={loading || !rawMessage.trim()}>
-            Parse Signal
+          <button onClick={handleParse} disabled={loading || !rawMessage.trim() || !selectedAccount}>
+            Parse & Execute
           </button>
           <button
             type="button"
@@ -174,19 +186,10 @@ export function SignalIntakePage() {
         <ParsedTradeReview
           trade={parseResult.trade}
           warnings={parseResult.warnings}
-          targetAccount={targetAccount}
+          targetAccount={selectedAccount}
+          executionMode={executionMode}
           lotSize={lotSize}
           note={note}
-          accounts={accounts}
-          onTargetAccountChange={setTargetAccount}
-          onLotSizeChange={(value) => {
-            setLotSize(value);
-            setLotSizeManuallyEdited(true);
-          }}
-          onNoteChange={setNote}
-          onExecute={handleExecute}
-          onCancel={() => setParseResult(null)}
-          disabled={loading}
         />
       ) : null}
 

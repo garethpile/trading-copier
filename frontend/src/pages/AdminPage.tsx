@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, useEffect, useMemo, useState } from "react";
 import {
   enableSocketFeature,
   fetchLotSizeConfig,
@@ -12,13 +12,15 @@ import {
   ConnectivityTestResponse,
   LotSizeConfig,
   SymbolConfig,
-  SocketFeatureEnableResponse,
   SocketFeatureStatusResponse,
   TargetAccountsConfig
 } from "../types";
 
 const sortSymbolConfigs = (input: Record<string, SymbolConfig>): Record<string, SymbolConfig> =>
   Object.fromEntries(Object.entries(input).sort(([a], [b]) => a.localeCompare(b)));
+
+const resolveAccountMapping = (symbolConfig: SymbolConfig, accountId: string, sourceSymbol: string): string =>
+  symbolConfig.accountDestinationSymbols?.[accountId] ?? symbolConfig.destinationBrokerSymbol ?? sourceSymbol;
 
 function CollapsibleCard({
   title,
@@ -44,33 +46,69 @@ function CollapsibleCard({
 
 export function AdminPage() {
   const [accountsConfig, setAccountsConfig] = useState<TargetAccountsConfig | null>(null);
-  const [accountId, setAccountId] = useState("");
-  const [newAccountId, setNewAccountId] = useState("");
-  const [status, setStatus] = useState<SocketFeatureStatusResponse | null>(null);
-  const [enableResult, setEnableResult] = useState<SocketFeatureEnableResponse | null>(null);
-  const [connectivityResult, setConnectivityResult] = useState<ConnectivityTestResponse | null>(null);
-  const [error, setError] = useState<string | undefined>();
-
-  const [managementError, setManagementError] = useState<string | undefined>();
-  const [managementMessage, setManagementMessage] = useState<string | undefined>();
   const [lotConfig, setLotConfig] = useState<LotSizeConfig | null>(null);
+  const [newAccountId, setNewAccountId] = useState("");
   const [newPair, setNewPair] = useState("");
   const [newPairLotSize, setNewPairLotSize] = useState("0.01");
-  const [newDestinationBrokerSymbol, setNewDestinationBrokerSymbol] = useState("");
 
+  const [socketStatusByAccount, setSocketStatusByAccount] = useState<Record<string, SocketFeatureStatusResponse>>({});
+  const [socketErrorByAccount, setSocketErrorByAccount] = useState<Record<string, string>>({});
+  const [socketActionMessageByAccount, setSocketActionMessageByAccount] = useState<Record<string, string>>({});
+
+  const [connectivityResult, setConnectivityResult] = useState<ConnectivityTestResponse | null>(null);
+  const [managementError, setManagementError] = useState<string | undefined>();
+  const [managementMessage, setManagementMessage] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
-  const isSocketEnabled = status?.status === "ENABLED";
+
+  const executionMode = accountsConfig?.executionMode ?? "DEMO";
   const statusClass = (value: string) =>
     value === "OK" || value === "SUCCESS" || value === "ENABLED" ? "status-ok" : "status-bad";
 
-  const loadStatus = async () => {
+  const accountRoles = useMemo(() => {
+    const roles: Record<string, string[]> = {};
+    const demo = accountsConfig?.modeAccounts?.DEMO;
+    const live = accountsConfig?.modeAccounts?.LIVE;
+    for (const accountId of accountsConfig?.accounts ?? []) {
+      const next: string[] = [];
+      if (accountId === demo) next.push("DEMO");
+      if (accountId === live) next.push("LIVE");
+      roles[accountId] = next;
+    }
+    return roles;
+  }, [accountsConfig]);
+
+  const refreshSocketStatus = async (accountId: string) => {
     if (!accountId) return;
     try {
+      const status = await getSocketFeatureStatus(accountId);
+      setSocketStatusByAccount((prev) => ({ ...prev, [accountId]: status }));
+      setSocketErrorByAccount((prev) => {
+        const next = { ...prev };
+        delete next[accountId];
+        return next;
+      });
+    } catch (error) {
+      setSocketErrorByAccount((prev) => ({ ...prev, [accountId]: String(error) }));
+    }
+  };
+
+  const saveLotConfig = async (message = "Lot sizes saved") => {
+    if (!lotConfig) return;
+    try {
       setLoading(true);
-      setError(undefined);
-      setStatus(await getSocketFeatureStatus(accountId));
-    } catch (e) {
-      setError(String(e));
+      setManagementError(undefined);
+      setManagementMessage(undefined);
+      const saved = await updateLotSizeConfig({
+        ...lotConfig,
+        symbols: sortSymbolConfigs(lotConfig.symbols)
+      });
+      setLotConfig({
+        ...saved,
+        symbols: sortSymbolConfigs(saved.symbols)
+      });
+      setManagementMessage(message);
+    } catch (error) {
+      setManagementError(String(error));
     } finally {
       setLoading(false);
     }
@@ -84,169 +122,301 @@ export function AdminPage() {
           symbols: sortSymbolConfigs(config.symbols)
         })
       )
-      .catch((e) => setManagementError(String(e)));
+      .catch((error) => setManagementError(String(error)));
   }, []);
 
   useEffect(() => {
     void fetchTargetAccountsConfig()
       .then((config) => {
         setAccountsConfig(config);
-        if (!accountId && config.accounts.length > 0) {
-          setAccountId(config.accounts[0]);
-        }
+        void Promise.all(config.accounts.map((accountId) => refreshSocketStatus(accountId)));
       })
-      .catch((e) => setManagementError(String(e)));
+      .catch((error) => setManagementError(String(error)));
   }, []);
-
-  useEffect(() => {
-    if (!accountId && accountsConfig?.accounts.length) {
-      setAccountId(accountsConfig.accounts[0]);
-      return;
-    }
-    void loadStatus();
-  }, [accountId]);
 
   return (
     <div className="stack">
       <div className="admin-grid">
-        <CollapsibleCard title="MetaCopier Socket" defaultOpen className="admin-card-half">
-        <strong>Target Accounts</strong>
-        {accountsConfig ? (
-          <>
-            {accountsConfig.accounts.map((account) => (
-              <div className="row" key={account}>
-                <input value={account} readOnly />
+        <CollapsibleCard title="Execution Routing" defaultOpen className="admin-card-full">
+          <strong>Target Accounts</strong>
+          {accountsConfig ? (
+            <>
+              {accountsConfig.accounts.map((account) => (
+                <div className="row" key={account}>
+                  <input value={account} readOnly />
+                  <button
+                    type="button"
+                    className="ghost"
+                    onClick={() =>
+                      setAccountsConfig((prev) => {
+                        if (!prev) return prev;
+                        const nextAccounts = prev.accounts.filter((a) => a !== account);
+                        if (nextAccounts.length === 0) return prev;
+                        return {
+                          ...prev,
+                          accounts: nextAccounts,
+                          modeAccounts: {
+                            DEMO:
+                              prev.modeAccounts?.DEMO === account
+                                ? nextAccounts[0]
+                                : prev.modeAccounts?.DEMO ?? nextAccounts[0],
+                            LIVE:
+                              prev.modeAccounts?.LIVE === account
+                                ? nextAccounts[1] ?? nextAccounts[0]
+                                : prev.modeAccounts?.LIVE ?? nextAccounts[1] ?? nextAccounts[0]
+                          }
+                        };
+                      })
+                    }
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+
+              <div className="row">
+                <input
+                  placeholder="Account ID"
+                  value={newAccountId}
+                  onChange={(e) => setNewAccountId(e.target.value)}
+                />
                 <button
                   type="button"
                   className="ghost"
-                  onClick={() =>
+                  onClick={() => {
+                    const nextId = newAccountId.trim();
+                    if (!nextId) return;
+                    setAccountsConfig((prev) => {
+                      if (!prev) {
+                        return {
+                          accounts: [nextId],
+                          executionMode: "DEMO",
+                          modeAccounts: { DEMO: nextId, LIVE: nextId }
+                        };
+                      }
+                      const nextAccounts = Array.from(new Set([...prev.accounts, nextId]));
+                      return {
+                        ...prev,
+                        accounts: nextAccounts,
+                        modeAccounts: {
+                          DEMO: prev.modeAccounts?.DEMO ?? nextAccounts[0],
+                          LIVE: prev.modeAccounts?.LIVE ?? nextAccounts[1] ?? nextAccounts[0]
+                        }
+                      };
+                    });
+                    setNewAccountId("");
+                  }}
+                >
+                  Add Account
+                </button>
+              </div>
+
+              <div className="row">
+                <label style={{ flex: 1 }}>
+                  Demo Account
+                  <select
+                    value={accountsConfig.modeAccounts?.DEMO ?? accountsConfig.accounts[0] ?? ""}
+                    onChange={(e) =>
+                      setAccountsConfig((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              modeAccounts: {
+                                ...prev.modeAccounts,
+                                DEMO: e.target.value
+                              }
+                            }
+                          : prev
+                      )
+                    }
+                  >
+                    {accountsConfig.accounts.map((account) => (
+                      <option key={`demo-${account}`} value={account}>
+                        {account}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label style={{ flex: 1 }}>
+                  Live Account
+                  <select
+                    value={accountsConfig.modeAccounts?.LIVE ?? accountsConfig.accounts[1] ?? accountsConfig.accounts[0] ?? ""}
+                    onChange={(e) =>
+                      setAccountsConfig((prev) =>
+                        prev
+                          ? {
+                              ...prev,
+                              modeAccounts: {
+                                ...prev.modeAccounts,
+                                LIVE: e.target.value
+                              }
+                            }
+                          : prev
+                      )
+                    }
+                  >
+                    {accountsConfig.accounts.map((account) => (
+                      <option key={`live-${account}`} value={account}>
+                        {account}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              <label>
+                Telegram/Web Execution Mode
+                <select
+                  value={executionMode}
+                  onChange={(e) =>
                     setAccountsConfig((prev) =>
                       prev
                         ? {
                             ...prev,
-                            accounts: prev.accounts.filter((a) => a !== account)
+                            executionMode: e.target.value === "LIVE" ? "LIVE" : "DEMO"
                           }
                         : prev
                     )
                   }
                 >
-                  Remove
-                </button>
-              </div>
-            ))}
-            <div className="row">
-              <input
-                placeholder="Account ID"
-                value={newAccountId}
-                onChange={(e) => setNewAccountId(e.target.value)}
-              />
+                  <option value="DEMO">DEMO</option>
+                  <option value="LIVE">LIVE</option>
+                </select>
+              </label>
+
               <button
                 type="button"
                 className="ghost"
-                onClick={() => {
-                  const nextId = newAccountId.trim();
-                  if (!nextId) return;
-                  setAccountsConfig((prev) =>
-                    prev
-                      ? {
-                          ...prev,
-                          accounts: Array.from(new Set([...prev.accounts, nextId]))
-                        }
-                      : { accounts: [nextId] }
-                  );
-                  setNewAccountId("");
+                disabled={loading}
+                onClick={async () => {
+                  if (!accountsConfig) return;
+                  try {
+                    setLoading(true);
+                    setManagementError(undefined);
+                    setManagementMessage(undefined);
+                    const saved = await updateTargetAccountsConfig(accountsConfig);
+                    setAccountsConfig(saved);
+                    setManagementMessage(`Target accounts saved. Mode: ${saved.executionMode ?? "DEMO"}`);
+                    await Promise.all(saved.accounts.map((accountId) => refreshSocketStatus(accountId)));
+                  } catch (error) {
+                    setManagementError(String(error));
+                  } finally {
+                    setLoading(false);
+                  }
                 }}
               >
-                Add Account
+                Save Target Accounts
               </button>
-            </div>
-            <button
-              type="button"
-              className="ghost"
-              onClick={async () => {
-                if (!accountsConfig) return;
-                try {
-                  setLoading(true);
-                  setManagementError(undefined);
-                  setManagementMessage(undefined);
-                  const saved = await updateTargetAccountsConfig(accountsConfig);
-                  setAccountsConfig(saved);
-                  setAccountId((prev) => (saved.accounts.includes(prev) ? prev : saved.accounts[0] ?? ""));
-                  setManagementMessage("Target accounts saved");
-                } catch (e) {
-                  setManagementError(String(e));
-                } finally {
-                  setLoading(false);
-                }
-              }}
-              disabled={loading}
-            >
-              Save Target Accounts
-            </button>
-          </>
-        ) : (
-          <p>Loading target accounts...</p>
-        )}
-
-        <label>
-          Target Account
-          <select value={accountId} onChange={(e) => setAccountId(e.target.value)}>
-            {(accountsConfig?.accounts ?? []).map((account) => (
-              <option value={account} key={account}>
-                {account}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <div className="row">
-          <button type="button" className="ghost" onClick={() => void loadStatus()} disabled={loading}>
-            Refresh Status
-          </button>
-          <button
-            type="button"
-            onClick={async () => {
-              try {
-                setLoading(true);
-                setError(undefined);
-                const result = await enableSocketFeature(accountId);
-                setEnableResult(result);
-                await loadStatus();
-              } catch (e) {
-                setError(String(e));
-              } finally {
-                setLoading(false);
-              }
-            }}
-            disabled={loading || !accountId || isSocketEnabled}
-          >
-            {isSocketEnabled ? "Socket Already Enabled" : "Enable Socket Feature"}
-          </button>
-        </div>
-
-        {status ? (
-          <div>
-            <strong>Socket Status:</strong> <span className={statusClass(status.status)}>{status.status}</span>
-            <br />
-            <strong>Account ID:</strong> {status.accountId}
-          </div>
-        ) : null}
-
-        {enableResult ? (
-          <div>
-            <strong>Enable Result:</strong>{" "}
-            <span className={statusClass(enableResult.success ? "SUCCESS" : "FAILED")}>
-              {enableResult.success ? "SUCCESS" : "FAILED"}
-            </span>
-            <br />
-            <strong>Message:</strong> {enableResult.message}
-          </div>
-        ) : null}
-
-        {managementMessage ? <p>{managementMessage}</p> : null}
-        {managementError ? <p className="error">{managementError}</p> : null}
-        {error ? <p className="error">{error}</p> : null}
+            </>
+          ) : (
+            <p>Loading target accounts...</p>
+          )}
         </CollapsibleCard>
+
+        {(accountsConfig?.accounts ?? []).map((accountId) => {
+          const status = socketStatusByAccount[accountId];
+          const roles = accountRoles[accountId] ?? [];
+          const isSocketEnabled = status?.status === "ENABLED";
+
+          return (
+            <CollapsibleCard
+              key={accountId}
+              title={`Account Details${roles.length > 0 ? ` (${roles.join("/")})` : ""}`}
+              defaultOpen
+              className="admin-card-half"
+            >
+              <div>
+                <strong>Account ID:</strong> {accountId}
+              </div>
+
+              <div className="row">
+                <button type="button" className="ghost" disabled={loading} onClick={() => void refreshSocketStatus(accountId)}>
+                  Refresh Socket Status
+                </button>
+                <button
+                  type="button"
+                  disabled={loading || isSocketEnabled}
+                  onClick={async () => {
+                    try {
+                      setLoading(true);
+                      setSocketErrorByAccount((prev) => {
+                        const next = { ...prev };
+                        delete next[accountId];
+                        return next;
+                      });
+                      const result = await enableSocketFeature(accountId);
+                      setSocketActionMessageByAccount((prev) => ({ ...prev, [accountId]: result.message }));
+                      await refreshSocketStatus(accountId);
+                    } catch (error) {
+                      setSocketErrorByAccount((prev) => ({ ...prev, [accountId]: String(error) }));
+                    } finally {
+                      setLoading(false);
+                    }
+                  }}
+                >
+                  {isSocketEnabled ? "Socket Already Enabled" : "Enable Socket Feature"}
+                </button>
+              </div>
+
+              {status ? (
+                <div>
+                  <strong>Socket Status:</strong> <span className={statusClass(status.status)}>{status.status}</span>
+                </div>
+              ) : null}
+              {socketActionMessageByAccount[accountId] ? <p>{socketActionMessageByAccount[accountId]}</p> : null}
+              {socketErrorByAccount[accountId] ? <p className="error">{socketErrorByAccount[accountId]}</p> : null}
+
+              <strong>Symbol Mapping (for this account)</strong>
+              {lotConfig ? (
+                <>
+                  {Object.entries(lotConfig.symbols)
+                    .sort(([a], [b]) => a.localeCompare(b))
+                    .map(([symbol, symbolConfig]) => (
+                      <div className="row" key={`${accountId}-${symbol}`}>
+                        <input value={symbol} readOnly />
+                        <input
+                          value={resolveAccountMapping(symbolConfig, accountId, symbol)}
+                          onChange={(e) =>
+                            setLotConfig((prev) => {
+                              if (!prev) return prev;
+                              const value = e.target.value.toUpperCase().trim();
+                              const existing = prev.symbols[symbol];
+                              const accountDestinationSymbols = {
+                                ...(existing.accountDestinationSymbols ?? {}),
+                                [accountId]: value
+                              };
+                              return {
+                                ...prev,
+                                symbols: sortSymbolConfigs({
+                                  ...prev.symbols,
+                                  [symbol]: {
+                                    ...existing,
+                                    accountDestinationSymbols
+                                  }
+                                })
+                              };
+                            })
+                          }
+                          placeholder="Destination symbol"
+                        />
+                      </div>
+                    ))}
+                  <button
+                    type="button"
+                    className="ghost"
+                    disabled={loading}
+                    onClick={() => void saveLotConfig(`Symbol mapping saved for ${accountId}`)}
+                  >
+                    Save Symbol Mapping
+                  </button>
+                </>
+              ) : (
+                <p>Loading symbol mapping...</p>
+              )}
+            </CollapsibleCard>
+          );
+        })}
 
         <CollapsibleCard title="MetaCopier Connectivity" className="admin-card-half">
           <div className="row">
@@ -257,14 +427,14 @@ export function AdminPage() {
               onClick={async () => {
                 try {
                   setLoading(true);
-                  setError(undefined);
+                  setManagementError(undefined);
                   setConnectivityResult(await testConnectivity());
-                } catch (e) {
+                } catch (error) {
                   setConnectivityResult({
                     status: "FAILED",
                     provider: "MetaCopier",
                     message: "Connectivity test failed",
-                    error: String(e)
+                    error: String(error)
                   });
                 } finally {
                   setLoading(false);
@@ -274,6 +444,7 @@ export function AdminPage() {
               Test Connectivity
             </button>
           </div>
+
           {connectivityResult ? (
             <div>
               <strong>Status:</strong>{" "}
@@ -292,59 +463,40 @@ export function AdminPage() {
           ) : null}
         </CollapsibleCard>
 
-        <CollapsibleCard title="Symbol Management" className="admin-card-full">
-        {lotConfig ? (
-          <>
-            <label>
-              Default Lot Size (fallback)
-              <input
-                type="number"
-                min="0.01"
-                step="0.01"
-                value={lotConfig.defaultLotSize}
-                onChange={(e) =>
-                  setLotConfig((prev) =>
-                    prev
-                      ? {
-                          ...prev,
-                          defaultLotSize: Number(e.target.value)
-                        }
-                      : prev
-                  )
-                }
-              />
-            </label>
-            <div className="stack">
-              <strong>Pair Symbol Mapping</strong>
+        <CollapsibleCard title="Lot Sizes" className="admin-card-full">
+          {lotConfig ? (
+            <>
+              <label>
+                Default Lot Size (fallback)
+                <input
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  value={lotConfig.defaultLotSize}
+                  onChange={(e) =>
+                    setLotConfig((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            defaultLotSize: Number(e.target.value)
+                          }
+                        : prev
+                    )
+                  }
+                />
+              </label>
+
+              <strong>Pair Lot Sizes</strong>
               {Object.entries(lotConfig.symbols)
                 .sort(([a], [b]) => a.localeCompare(b))
                 .map(([symbol, symbolConfig]) => (
-                  <div className="row" key={symbol}>
+                  <div className="row" key={`lot-${symbol}`}>
                     <input value={symbol} readOnly />
                     <input
                       type="number"
                       min="0.01"
                       step="0.01"
                       value={symbolConfig.lotSize}
-                      onChange={(e) =>
-                  setLotConfig((prev) =>
-                    prev
-                      ? {
-                          ...prev,
-                          symbols: sortSymbolConfigs({
-                            ...prev.symbols,
-                            [symbol]: {
-                              ...prev.symbols[symbol],
-                              lotSize: Number(e.target.value)
-                            }
-                          })
-                        }
-                      : prev
-                  )
-                      }
-                    />
-                    <input
-                      value={symbolConfig.destinationBrokerSymbol}
                       onChange={(e) =>
                         setLotConfig((prev) =>
                           prev
@@ -354,14 +506,13 @@ export function AdminPage() {
                                   ...prev.symbols,
                                   [symbol]: {
                                     ...prev.symbols[symbol],
-                                    destinationBrokerSymbol: e.target.value.toUpperCase()
+                                    lotSize: Number(e.target.value)
                                   }
                                 })
                               }
                             : prev
                         )
                       }
-                      placeholder="Destination Broker"
                     />
                     <button
                       type="button"
@@ -382,86 +533,64 @@ export function AdminPage() {
                     </button>
                   </div>
                 ))}
-            </div>
-            <div className="row">
-              <input
-                placeholder="Pair (e.g. GBPUSD)"
-                value={newPair}
-                onChange={(e) => setNewPair(e.target.value.toUpperCase())}
-              />
-              <input
-                type="number"
-                min="0.01"
-                step="0.01"
-                value={newPairLotSize}
-                onChange={(e) => setNewPairLotSize(e.target.value)}
-              />
-              <input
-                placeholder="Destination Broker (e.g. GBPUSD+)"
-                value={newDestinationBrokerSymbol}
-                onChange={(e) => setNewDestinationBrokerSymbol(e.target.value.toUpperCase())}
-              />
-              <button
-                type="button"
-                className="ghost"
-                onClick={() => {
-                  const symbol = newPair.trim().toUpperCase();
-                  const lot = Number(newPairLotSize);
-                  const destinationBrokerSymbol = newDestinationBrokerSymbol.trim().toUpperCase();
-                  if (!symbol || !Number.isFinite(lot) || !destinationBrokerSymbol) return;
-                  setLotConfig((prev) =>
-                    prev
-                      ? {
-                          ...prev,
-                          symbols: sortSymbolConfigs({
-                            ...prev.symbols,
-                            [symbol]: {
-                              lotSize: lot,
-                              destinationBrokerSymbol
-                            }
-                          })
-                        }
-                      : prev
-                  );
-                  setNewPair("");
-                  setNewDestinationBrokerSymbol("");
-                }}
-              >
-                Add Pair
-              </button>
-            </div>
-            <button
-              type="button"
-              onClick={async () => {
-                if (!lotConfig) return;
-                try {
-                  setLoading(true);
-                  setManagementError(undefined);
-                  setManagementMessage(undefined);
-                  const saved = await updateLotSizeConfig({
-                    ...lotConfig,
-                    symbols: sortSymbolConfigs(lotConfig.symbols)
-                  });
-                  setLotConfig({
-                    ...saved,
-                    symbols: sortSymbolConfigs(saved.symbols)
-                  });
-                  setManagementMessage("Symbol config saved");
-                } catch (e) {
-                  setManagementError(String(e));
-                } finally {
-                  setLoading(false);
-                }
-              }}
-              disabled={loading}
-            >
-              Save Symbol Management
-            </button>
-          </>
-        ) : (
-          <p>Loading lot size config...</p>
-        )}
+
+              <div className="row">
+                <input
+                  placeholder="Pair (e.g. GBPUSD)"
+                  value={newPair}
+                  onChange={(e) => setNewPair(e.target.value.toUpperCase())}
+                />
+                <input
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  value={newPairLotSize}
+                  onChange={(e) => setNewPairLotSize(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={() => {
+                    if (!accountsConfig) return;
+                    const symbol = newPair.trim().toUpperCase();
+                    const lot = Number(newPairLotSize);
+                    if (!symbol || !Number.isFinite(lot)) return;
+
+                    const accountDestinationSymbols = Object.fromEntries(
+                      accountsConfig.accounts.map((accountId) => [accountId, symbol])
+                    );
+
+                    setLotConfig((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            symbols: sortSymbolConfigs({
+                              ...prev.symbols,
+                              [symbol]: {
+                                lotSize: lot,
+                                destinationBrokerSymbol: symbol,
+                                accountDestinationSymbols
+                              }
+                            })
+                          }
+                        : prev
+                    );
+                    setNewPair("");
+                  }}
+                >
+                  Add Pair
+                </button>
+              </div>
+
+              <button type="button" disabled={loading} onClick={() => void saveLotConfig("Lot sizes saved")}>Save Lot Sizes</button>
+            </>
+          ) : (
+            <p>Loading lot size config...</p>
+          )}
         </CollapsibleCard>
+
+        {managementMessage ? <p>{managementMessage}</p> : null}
+        {managementError ? <p className="error">{managementError}</p> : null}
       </div>
     </div>
   );
