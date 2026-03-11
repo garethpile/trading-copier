@@ -207,13 +207,10 @@ export class BreakevenWebsocketAutomation {
       };
     });
 
-    const tp1 = normalizedLegs.find((leg) => asNumber(leg["leg"]) === 1 && asString(leg["status"]) === "EXECUTED");
-    if (!tp1) return;
-
-    const tp1RequestId = extractRequestId(tp1);
-    if (tp1RequestId === undefined) return;
-
-    if (!closed.has(tp1RequestId)) {
+    const triggerLeg = normalizedLegs.find(
+      (leg) => asString(leg["status"]) === "EXECUTED" && asString(leg["runtimeState"]) === "CLOSED"
+    );
+    if (!triggerLeg) {
       const providerWithLiveState: GenericObject = {
         ...providerResponse,
         legs: normalizedLegs,
@@ -229,6 +226,7 @@ export class BreakevenWebsocketAutomation {
       return;
     }
 
+    const triggerRequestId = extractRequestId(triggerLeg);
     const breakeven = (providerResponse.breakeven as GenericObject | undefined) ?? {};
     if (breakeven.status === "COMPLETED") {
       return;
@@ -239,14 +237,16 @@ export class BreakevenWebsocketAutomation {
 
     for (const leg of normalizedLegs) {
       const legNo = asNumber(leg["leg"]);
-      if (!legNo || legNo <= 1) continue;
+      if (!legNo) continue;
       if (asString(leg["status"]) !== "EXECUTED") continue;
+      if (asString(leg["runtimeState"]) !== "OPEN") continue;
 
       const legRequestId = extractRequestId(leg);
       if (legRequestId === undefined) {
         failedLegs.push({ leg: legNo, reason: "missing requestId" });
         continue;
       }
+      if (triggerRequestId !== undefined && legRequestId === triggerRequestId) continue;
 
       const openPosition = openPositions.find((position) => extractRequestId(position) === legRequestId);
       if (!openPosition) {
@@ -282,7 +282,7 @@ export class BreakevenWebsocketAutomation {
       lastLiveSyncAt: new Date().toISOString(),
       breakeven: {
         status: failedLegs.length === 0 ? "COMPLETED" : movedLegs.length > 0 ? "PARTIAL" : "FAILED",
-        triggeredByRequestId: tp1RequestId,
+        ...(triggerRequestId !== undefined ? { triggeredByRequestId: triggerRequestId } : {}),
         triggeredAt: new Date().toISOString(),
         movedLegs,
         failedLegs

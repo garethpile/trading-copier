@@ -61,6 +61,7 @@ export class TradeRuntimeSyncService {
   private readonly secretsClient = new SecretsManagerClient({});
   private secretCache?: MetaCopierSecret;
   private readonly baseUrl: string;
+  private readonly globalBaseUrl: string;
   private readonly secretArn: string;
   private readonly envApiKey: string;
   private readonly envUserEmail?: string;
@@ -68,6 +69,7 @@ export class TradeRuntimeSyncService {
 
   constructor(private readonly repository: TradeRepository) {
     this.baseUrl = process.env.METACOPIER_BASE_URL ?? "https://api-london.metacopier.io";
+    this.globalBaseUrl = process.env.METACOPIER_GLOBAL_BASE_URL ?? "https://api.metacopier.io";
     this.secretArn = process.env.METACOPIER_SECRET_ARN ?? "";
     this.envApiKey = process.env.METACOPIER_API_KEY?.trim() ?? "";
     this.envUserEmail = process.env.METACOPIER_USER_EMAIL?.trim() || undefined;
@@ -93,7 +95,9 @@ export class TradeRuntimeSyncService {
     const secret = await this.getSecret();
     const apiKey = secret.apiKey?.trim();
     if (!apiKey) return undefined;
-    return { apiKey, userEmail: this.envUserEmail ?? secret.userEmail?.trim() };
+    // Keep runtime sync auth aligned with execute-trade provider behavior:
+    // only send X-User-Email when explicitly configured via environment.
+    return { apiKey, userEmail: this.envUserEmail };
   }
 
   private async headers(): Promise<Record<string, string> | undefined> {
@@ -131,25 +135,44 @@ export class TradeRuntimeSyncService {
   ): Promise<Map<string, { ok: boolean; positions: Obj[] }>> {
     const map = new Map<string, { ok: boolean; positions: Obj[] }>();
     const headers = await this.headers();
-    if (!headers) return map;
+    if (!headers) {
+      console.error("Trade runtime sync skipped: missing MetaCopier credentials");
+      return map;
+    }
 
     await Promise.all(
       accountIds.map(async (accountId) => {
-        try {
-          const endpoint = `${this.baseUrl.replace(/\/$/, "")}/rest/api/v1/accounts/${accountId}/positions`;
-          const res = await this.fetchJson(endpoint, { method: "GET", headers });
-          if (!res.ok) {
-            map.set(accountId, { ok: false, positions: [] });
+        const hosts = Array.from(new Set([this.baseUrl, this.globalBaseUrl].map((v) => v.replace(/\/$/, ""))));
+        const endpointCandidates = hosts.flatMap((host) => [
+          `${host}/rest/api/v1/accounts/${accountId}/positions`,
+          `${host}/rest/api/v1/accounts/${accountId}/open-positions`
+        ]);
+
+        const failures: string[] = [];
+        for (const endpoint of endpointCandidates) {
+          try {
+            const res = await this.fetchJson(endpoint, { method: "GET", headers });
+            if (!res.ok) {
+              failures.push(`${endpoint} -> HTTP ${res.status}`);
+              continue;
+            }
+
+            const bodyObj = toObj(res.body);
+            const positions = Array.isArray(res.body)
+              ? (res.body as Obj[])
+              : toArray(bodyObj?.openPositions ?? bodyObj?.positions ?? bodyObj?.items);
+            map.set(accountId, { ok: true, positions });
             return;
+          } catch (error) {
+            failures.push(`${endpoint} -> ${String(error)}`);
           }
-          const bodyObj = toObj(res.body);
-          const positions = Array.isArray(res.body)
-            ? (res.body as Obj[])
-            : toArray(bodyObj?.openPositions ?? bodyObj?.positions ?? bodyObj?.items);
-          map.set(accountId, { ok: true, positions });
-        } catch {
-          map.set(accountId, { ok: false, positions: [] });
         }
+
+        console.error("Trade runtime sync: unable to load open positions", {
+          accountId,
+          attempts: failures
+        });
+        map.set(accountId, { ok: false, positions: [] });
       })
     );
 
@@ -239,23 +262,26 @@ export class TradeRuntimeSyncService {
         };
       });
 
-      const tp1 = normalizedLegs.find((l) => asNumber(l.leg) === 1 && asString(l.status) === "EXECUTED");
-      const tp1Closed = tp1 ? asString(tp1.runtimeState) === "CLOSED" : false;
-      const tp1Price = tp1 ? asNumber(tp1.takeProfit) : undefined;
+      const triggerLeg = normalizedLegs.find(
+        (l) => asString(l.status) === "EXECUTED" && asString(l.runtimeState) === "CLOSED"
+      );
+      const triggerClosed = Boolean(triggerLeg);
+      const triggerRequestId = triggerLeg ? extractRequestId(triggerLeg) : undefined;
+      const triggerTakeProfit = triggerLeg ? asNumber(triggerLeg.takeProfit) : undefined;
       const existingBe = toObj(providerResponse.breakeven) ?? {};
 
       let breakeven = existingBe;
-      if (tp1Closed && asString(existingBe.status) !== "COMPLETED") {
+      if (triggerClosed && asString(existingBe.status) !== "COMPLETED") {
         const movedLegs: Array<{ leg: number; positionId: string }> = [];
         const failedLegs: Array<{ leg: number; reason: string }> = [];
 
         for (const leg of normalizedLegs) {
           const legNo = asNumber(leg.leg);
-          if (!legNo || legNo <= 1) continue;
+          if (!legNo) continue;
           if (asString(leg.status) !== "EXECUTED") continue;
           if (asString(leg.runtimeState) !== "OPEN") continue;
-          if (tp1Price === undefined) {
-            failedLegs.push({ leg: legNo, reason: "tp1 takeProfit missing" });
+          if (triggerTakeProfit === undefined) {
+            failedLegs.push({ leg: legNo, reason: "trigger takeProfit missing" });
             continue;
           }
           const requestId = extractRequestId(leg);
@@ -263,14 +289,15 @@ export class TradeRuntimeSyncService {
             failedLegs.push({ leg: legNo, reason: "missing requestId" });
             continue;
           }
+          if (triggerRequestId !== undefined && requestId === triggerRequestId) continue;
           const position = openPositions.find((p) => extractRequestId(p) === requestId);
           if (!position) {
             failedLegs.push({ leg: legNo, reason: "open position not found" });
             continue;
           }
-          // Profit-lock SL: move 5% of the TP1 distance from entry toward TP1.
+          // Profit-lock SL: move 5% of trigger-leg TP distance from entry toward TP.
           // BUY => slightly above entry, SELL => slightly below entry.
-          const profitLockStop = trade.entry + (tp1Price - trade.entry) * 0.05;
+          const profitLockStop = trade.entry + (triggerTakeProfit - trade.entry) * 0.05;
           const moved = await this.moveStopLossToBe({
             accountId: trade.targetAccount,
             position,
@@ -286,12 +313,16 @@ export class TradeRuntimeSyncService {
           leg.currentStopLoss = profitLockStop;
         }
 
-        breakeven = {
-          status: failedLegs.length === 0 ? "COMPLETED" : movedLegs.length > 0 ? "PARTIAL" : "FAILED",
-          triggeredAt: new Date().toISOString(),
-          movedLegs,
-          failedLegs
-        };
+        // Only finalize breakeven state when at least one leg was processed.
+        // If no leg was moved/failed, keep BE pending so a later sync can still apply it.
+        if (movedLegs.length > 0 || failedLegs.length > 0) {
+          breakeven = {
+            status: failedLegs.length === 0 ? "COMPLETED" : movedLegs.length > 0 ? "PARTIAL" : "FAILED",
+            triggeredAt: new Date().toISOString(),
+            movedLegs,
+            failedLegs
+          };
+        }
       }
 
       const nextProviderResponse: Obj = {

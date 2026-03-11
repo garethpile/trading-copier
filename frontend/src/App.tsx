@@ -36,7 +36,10 @@ export default function App() {
   return (
     <main className="container stack">
       <header className="row spread">
-        <h1>Trading Copier</h1>
+        <div className="row app-header-title">
+          <h1>Trading Copier</h1>
+          <span className="screen-heading">{pageTitle[view]}</span>
+        </div>
         <div className="row">
           <button onClick={() => setView("intake")} className={view === "intake" ? "active" : "ghost"}>
             Signal Intake
@@ -90,8 +93,6 @@ export default function App() {
           </div>
         </div>
       </header>
-
-      <h2>{pageTitle[view]}</h2>
 
       {view === "intake" ? <SignalIntakePage /> : null}
       {view === "history" ? <TradeHistoryPage /> : null}

@@ -23,7 +23,7 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
     private readonly secretArn: string,
     private readonly tradingBaseUrl: string,
     private readonly globalBaseUrl: string,
-    private readonly timeoutMs = Number(process.env.METACOPIER_REQUEST_TIMEOUT_MS ?? "8000")
+    private readonly timeoutMs = Number(process.env.METACOPIER_REQUEST_TIMEOUT_MS ?? "25000")
   ) {}
 
   private buildHeaders(apiKey: string): Record<string, string> {
@@ -145,6 +145,31 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
     }
   }
 
+  private async findOpenPositionByRequestIdWithRetry(input: {
+    accountId: string;
+    requestId: number;
+    apiKey: string;
+    attempts?: number;
+    delayMs?: number;
+  }): Promise<boolean> {
+    const attempts = Math.max(1, input.attempts ?? 4);
+    const delayMs = Math.max(200, input.delayMs ?? 1500);
+
+    for (let i = 0; i < attempts; i += 1) {
+      const found = await this.findOpenPositionByRequestId({
+        accountId: input.accountId,
+        requestId: input.requestId,
+        apiKey: input.apiKey
+      });
+      if (found) return true;
+      if (i < attempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+
+    return false;
+  }
+
   async executeTrade(input: {
     symbol: string;
     destinationBrokerSymbol?: string;
@@ -192,10 +217,12 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
         });
       } catch (error) {
         if (this.isAbortError(error)) {
-          const recovered = await this.findOpenPositionByRequestId({
+          const recovered = await this.findOpenPositionByRequestIdWithRetry({
             accountId: input.targetAccount,
             requestId,
-            apiKey: secret.apiKey
+            apiKey: secret.apiKey,
+            attempts: 5,
+            delayMs: 1500
           });
           if (recovered) {
             return {

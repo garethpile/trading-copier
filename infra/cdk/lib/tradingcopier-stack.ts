@@ -157,6 +157,7 @@ export class TradingCopierStack extends cdk.Stack {
       METACOPIER_SECRET_ARN: metacopierSecret.secretArn,
       METACOPIER_BASE_URL: "https://api-london.metacopier.io",
       METACOPIER_GLOBAL_BASE_URL: "https://api.metacopier.io",
+      METACOPIER_REQUEST_TIMEOUT_MS: process.env.METACOPIER_REQUEST_TIMEOUT_MS?.trim() || "25000",
       ALLOWED_TARGET_ACCOUNTS: "a5231bf5-8713-44b6-846d-4c7f43a5bf30",
       LOT_SIZE_MIN: "0.01",
       LOT_SIZE_MAX: "50"
@@ -175,7 +176,7 @@ export class TradingCopierStack extends cdk.Stack {
       handler: "handlers/executeTrade.handler",
       code: lambdaCode,
       environment: commonEnv,
-      timeout: cdk.Duration.seconds(20)
+      timeout: cdk.Duration.seconds(45)
     });
 
     const getTradeHistoryFn = new lambda.Function(this, "GetTradeHistoryFn", {

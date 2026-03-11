@@ -71,7 +71,6 @@ const formatExecutionLegs = (providerResponse: unknown): string[] => {
 };
 
 const resolveConfigUserId = (chatId: string): string => process.env.TELEGRAM_CONFIG_USER_ID?.trim() || `telegram:${chatId}`;
-const resolveExecutionUserId = (chatId: string): string => `telegram:${chatId}`;
 
 const sendTelegramMessage = async (botToken: string, chatId: string, text: string): Promise<void> => {
   const endpoint = `https://api.telegram.org/bot${botToken}/sendMessage`;
@@ -248,7 +247,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   }
 
   const configUserId = resolveConfigUserId(chatId);
-  const executionUserId = resolveExecutionUserId(chatId);
+  // Use the config owner user id for execution records so Telegram and Web share one trade ledger/history.
+  const executionUserId = configUserId;
   const lotConfig = await repository.getLotSizeConfig(configUserId);
   const targetConfig = await repository.getTargetAccountsConfig(configUserId);
   const profile = await repository.getTelegramProfile(chatId);

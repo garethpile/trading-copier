@@ -49,24 +49,34 @@ const toLegs = (providerResponse: unknown): LegView[] => {
   });
 };
 
-const isClosedRequest = (item: TradeRecord): boolean => {
+const legStateSummary = (item: TradeRecord): { hasOpenExecutedLeg: boolean; hasClosedOrFailedLeg: boolean } => {
   const legs = toLegs(item.providerResponse);
-  if (legs.length > 0) {
-    const activeLegExists = legs.some((leg) => leg.runtimeState !== "CLOSED" && leg.status === "EXECUTED");
-    return !activeLegExists;
+  if (legs.length === 0) {
+    const status = item.status.toUpperCase();
+    return {
+      hasOpenExecutedLeg: status === "EXECUTED" || status === "EXECUTING",
+      hasClosedOrFailedLeg: status === "FAILED" || status === "REJECTED"
+    };
   }
 
-  const status = item.status.toUpperCase();
-  return status === "FAILED" || status === "REJECTED";
+  return {
+    hasOpenExecutedLeg: legs.some((leg) => leg.status === "EXECUTED" && leg.runtimeState !== "CLOSED"),
+    hasClosedOrFailedLeg: legs.some((leg) => leg.runtimeState === "CLOSED" || leg.status === "FAILED")
+  };
+};
+
+const isClosedRequest = (item: TradeRecord): boolean => {
+  const summary = legStateSummary(item);
+  return summary.hasClosedOrFailedLeg && !summary.hasOpenExecutedLeg;
 };
 
 const requestPill = (item: TradeRecord): { label: string; className: string } => {
   const legs = toLegs(item.providerResponse);
   if (legs.length > 0) {
-    const hasOpenExecutedLeg = legs.some((leg) => leg.status === "EXECUTED" && leg.runtimeState !== "CLOSED");
+    const summary = legStateSummary(item);
     const hasFailedLeg = legs.some((leg) => leg.status === "FAILED");
-    if (hasOpenExecutedLeg) {
-      return hasFailedLeg ? { label: "PARTIAL", className: "pill warn" } : { label: "LIVE", className: "pill ok live-pill" };
+    if (summary.hasOpenExecutedLeg) {
+      return summary.hasClosedOrFailedLeg ? { label: "PARTIAL", className: "pill warn" } : { label: "LIVE", className: "pill ok live-pill" };
     }
     return hasFailedLeg ? { label: "FAILED", className: "pill bad" } : { label: "CLOSED", className: "pill" };
   }
@@ -97,14 +107,19 @@ const filterLegsByMode = (legs: LegView[], filter: FilterMode): LegView[] => {
 export function TradeHistoryTable({
   items,
   filter,
-  onFilterChange
+  onFilterChange,
+  accountModeByAccount
 }: {
   items: TradeRecord[];
   filter: FilterMode;
   onFilterChange: (mode: FilterMode) => void;
+  accountModeByAccount?: Record<string, string>;
 }) {
   const [collapsedBySignal, setCollapsedBySignal] = useState<Record<string, boolean>>({});
-  const filtered = items.filter((item) => (filter === "ACTIVE" ? !isClosedRequest(item) : isClosedRequest(item)));
+  const filtered = items.filter((item) => {
+    const summary = legStateSummary(item);
+    return filter === "ACTIVE" ? summary.hasOpenExecutedLeg : summary.hasClosedOrFailedLeg;
+  });
 
   return (
     <div className="stack">
@@ -140,6 +155,7 @@ export function TradeHistoryTable({
         const allLegs = toLegs(item.providerResponse);
         const legs = filterLegsByMode(allLegs, filter);
         const state = requestPill(item);
+        const accountModeLabel = accountModeByAccount?.[item.targetAccount] ?? "UNKNOWN";
         const sideClass = item.side === "BUY" ? "side-buy" : "side-sell";
         const requestSideClass = item.side === "BUY" ? "request-buy" : "request-sell";
         const collapsed = collapsedBySignal[item.signalId] ?? true;
@@ -162,7 +178,10 @@ export function TradeHistoryTable({
                   <h4 className="request-title">
                     {item.symbol} <span className={sideClass}>{item.side}</span>
                   </h4>
-                  <div className="request-meta">{new Date(item.createdAt).toLocaleString()}</div>
+                  <div className="request-meta row">
+                    <span>{new Date(item.createdAt).toLocaleString()}</span>
+                    <span className="pill account-mode-pill">{accountModeLabel}</span>
+                  </div>
                 </div>
                 <div className="row">
                   <span className={state.className}>{state.label}</span>

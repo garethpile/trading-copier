@@ -31,6 +31,19 @@ body {
   gap: 10px;
 }
 
+.app-header-title {
+  gap: 14px;
+}
+
+.screen-heading {
+  font-size: 0.78rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: #ff4d5f;
+  line-height: 1;
+}
+
 .profile-menu {
   position: relative;
 }
@@ -287,6 +300,13 @@ button:disabled {
 .request-meta {
   color: #9bb2de;
   font-size: 0.9rem;
+}
+
+.account-mode-pill {
+  min-width: 0;
+  padding: 2px 8px;
+  font-size: 0.68rem;
+  letter-spacing: 0.04em;
 }
 
 .request-grid {
