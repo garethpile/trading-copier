@@ -52,6 +52,20 @@ const extractOrderType = (position: GenericObject, side: "BUY" | "SELL"): "Buy" 
 };
 
 const toArray = (value: unknown): GenericObject[] => (Array.isArray(value) ? (value as GenericObject[]) : []);
+const normalizeSymbol = (value: string): string => value.replace(/[^A-Z0-9]/gi, "").toUpperCase();
+
+const extractPositionSymbol = (position: GenericObject): string | undefined => {
+  const symbol = asString(position.symbol ?? position.instrument ?? position.asset);
+  return symbol ? normalizeSymbol(symbol) : undefined;
+};
+
+const extractPositionSide = (position: GenericObject): "BUY" | "SELL" | undefined => {
+  const raw = asString(position.orderType ?? position.dealType ?? position.side ?? position.type)?.toLowerCase();
+  if (!raw) return undefined;
+  if (raw.includes("buy")) return "BUY";
+  if (raw.includes("sell")) return "SELL";
+  return undefined;
+};
 
 export class BreakevenWebsocketAutomation {
   private readonly apiKey: string;
@@ -60,8 +74,8 @@ export class BreakevenWebsocketAutomation {
   private readonly tradingBaseUrl: string;
   private readonly automationUserId: string;
   private readonly pollMs: number;
+  private readonly requestMatchWindowMs: number;
   private readonly openPositionsByAccount = new Map<string, GenericObject[]>();
-  private readonly closedRequestIdsByAccount = new Map<string, Set<number>>();
   private evaluating = false;
 
   constructor(private readonly repository: TradeRepository) {
@@ -71,6 +85,10 @@ export class BreakevenWebsocketAutomation {
     this.tradingBaseUrl = process.env.METACOPIER_BASE_URL ?? "https://api-london.metacopier.io";
     this.automationUserId = process.env.AUTOMATION_USER_ID ?? process.env.LOCAL_USER_ID ?? "local-user";
     this.pollMs = Number(process.env.BREAKEVEN_POLL_MS ?? "5000");
+    this.requestMatchWindowMs = Math.max(
+      60_000,
+      Number(process.env.REQUEST_MATCH_WINDOW_MS ?? String(15 * 60 * 1000))
+    );
   }
 
   start(): void {
@@ -137,23 +155,9 @@ export class BreakevenWebsocketAutomation {
       }
 
       if (type === "UpdateHistoryDTO") {
-        const history = toArray(data.history);
-        const requestIds = this.closedRequestIdsByAccount.get(accountId) ?? new Set<number>();
-
-        for (const item of history) {
-          const requestId = extractRequestId(item);
-          if (requestId !== undefined) {
-            requestIds.add(requestId);
-          }
-        }
-
-        // Keep memory bounded.
-        if (requestIds.size > 2000) {
-          const newest = Array.from(requestIds).slice(-1000);
-          this.closedRequestIdsByAccount.set(accountId, new Set(newest));
-        } else {
-          this.closedRequestIdsByAccount.set(accountId, requestIds);
-        }
+        // We do not infer closure from bare requestId history entries because requestIds
+        // are reused in the 0..999 range and can collide across different trades.
+        return;
       }
     } catch (error) {
       console.error("Failed to parse websocket payload", String(error));
@@ -183,7 +187,26 @@ export class BreakevenWebsocketAutomation {
     const legs = toArray(providerResponse.legs);
     if (legs.length < 2) return;
     const openPositions = this.openPositionsByAccount.get(trade.targetAccount) ?? [];
-    const closed = this.closedRequestIdsByAccount.get(trade.targetAccount) ?? new Set<number>();
+    const tradeCreatedMs = Date.parse(trade.createdAt);
+    const expectedSymbols = new Set(
+      [
+        normalizeSymbol(trade.symbol),
+        asString(providerResponse.destinationBrokerSymbol)
+          ? normalizeSymbol(String(providerResponse.destinationBrokerSymbol))
+          : undefined
+      ].filter((v): v is string => Boolean(v))
+    );
+    const matchedOpenPositions = openPositions.filter((position) => {
+      const side = extractPositionSide(position);
+      const symbol = extractPositionSymbol(position);
+      if (!(side === trade.side && !!symbol && expectedSymbols.has(symbol))) return false;
+      if (!Number.isFinite(tradeCreatedMs)) return true;
+      const openTime = asString(position.openTime ?? position.openedAt ?? position.time);
+      if (!openTime) return true;
+      const openMs = Date.parse(openTime);
+      if (!Number.isFinite(openMs)) return true;
+      return Math.abs(openMs - tradeCreatedMs) <= this.requestMatchWindowMs;
+    });
 
     const normalizedLegs: GenericObject[] = legs.map((leg) => {
       const requestId = extractRequestId(leg);
@@ -193,11 +216,18 @@ export class BreakevenWebsocketAutomation {
       if (legStatus === "FAILED") {
         runtimeState = "CLOSED";
       } else if (requestId !== undefined) {
-        if (closed.has(requestId)) {
-          runtimeState = "CLOSED";
-        } else if (openPositions.some((position) => extractRequestId(position) === requestId)) {
+        if (matchedOpenPositions.some((position) => extractRequestId(position) === requestId)) {
           runtimeState = "OPEN";
+        } else if (legStatus === "EXECUTED") {
+          runtimeState = "CLOSED";
         }
+      }
+      const previousRuntimeState = asString(leg["runtimeState"])?.toUpperCase();
+      if (
+        runtimeState === "UNKNOWN" &&
+        (previousRuntimeState === "OPEN" || previousRuntimeState === "CLOSED")
+      ) {
+        runtimeState = previousRuntimeState;
       }
 
       return {
@@ -248,7 +278,7 @@ export class BreakevenWebsocketAutomation {
       }
       if (triggerRequestId !== undefined && legRequestId === triggerRequestId) continue;
 
-      const openPosition = openPositions.find((position) => extractRequestId(position) === legRequestId);
+      const openPosition = matchedOpenPositions.find((position) => extractRequestId(position) === legRequestId);
       if (!openPosition) {
         failedLegs.push({ leg: legNo, reason: "position not currently open" });
         continue;

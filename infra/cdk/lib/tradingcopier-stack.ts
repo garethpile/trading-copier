@@ -7,6 +7,11 @@ import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as apigwv2 from "aws-cdk-lib/aws-apigatewayv2";
 import * as integrations from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import * as authorizers from "aws-cdk-lib/aws-apigatewayv2-authorizers";
+import * as events from "aws-cdk-lib/aws-events";
+import * as targets from "aws-cdk-lib/aws-events-targets";
+import * as ec2 from "aws-cdk-lib/aws-ec2";
+import * as ecs from "aws-cdk-lib/aws-ecs";
+import * as logs from "aws-cdk-lib/aws-logs";
 
 export class TradingCopierStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
@@ -158,7 +163,10 @@ export class TradingCopierStack extends cdk.Stack {
       METACOPIER_BASE_URL: "https://api-london.metacopier.io",
       METACOPIER_GLOBAL_BASE_URL: "https://api.metacopier.io",
       METACOPIER_REQUEST_TIMEOUT_MS: process.env.METACOPIER_REQUEST_TIMEOUT_MS?.trim() || "25000",
-      ALLOWED_TARGET_ACCOUNTS: "a5231bf5-8713-44b6-846d-4c7f43a5bf30",
+      AUTOMATION_USER_ID:
+        process.env.AUTOMATION_USER_ID?.trim() || process.env.TELEGRAM_CONFIG_USER_ID?.trim() || "",
+      ALLOWED_TARGET_ACCOUNTS:
+        process.env.ALLOWED_TARGET_ACCOUNTS?.trim() || "a5231bf5-8713-44b6-846d-4c7f43a5bf30",
       LOT_SIZE_MIN: "0.01",
       LOT_SIZE_MAX: "50"
     };
@@ -193,6 +201,14 @@ export class TradingCopierStack extends cdk.Stack {
       code: lambdaCode,
       environment: commonEnv,
       timeout: cdk.Duration.seconds(10)
+    });
+
+    const runRuntimeSyncFn = new lambda.Function(this, "RunRuntimeSyncFn", {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: "handlers/runRuntimeSync.handler",
+      code: lambdaCode,
+      environment: commonEnv,
+      timeout: cdk.Duration.seconds(20)
     });
 
     const testConnectivityFn = new lambda.Function(this, "TestConnectivityFn", {
@@ -266,10 +282,73 @@ export class TradingCopierStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(20)
     });
 
+    // Low-cost always-on worker for immediate BE automation:
+    // one tiny Fargate task in public subnets (no NAT / no load balancer).
+    const workerVpc = new ec2.Vpc(this, "BreakevenWorkerVpc", {
+      maxAzs: 2,
+      natGateways: 0,
+      subnetConfiguration: [
+        {
+          name: "public",
+          subnetType: ec2.SubnetType.PUBLIC,
+          cidrMask: 24
+        }
+      ]
+    });
+
+    const workerCluster = new ecs.Cluster(this, "BreakevenWorkerCluster", {
+      vpc: workerVpc,
+      clusterName: "tradingcopier-breakeven-worker"
+    });
+
+    const workerTaskDef = new ecs.FargateTaskDefinition(this, "BreakevenWorkerTaskDef", {
+      cpu: 256,
+      memoryLimitMiB: 512,
+      runtimePlatform: {
+        operatingSystemFamily: ecs.OperatingSystemFamily.LINUX,
+        cpuArchitecture: ecs.CpuArchitecture.ARM64
+      }
+    });
+
+    const workerLogGroup = new logs.LogGroup(this, "BreakevenWorkerLogGroup", {
+      retention: logs.RetentionDays.ONE_WEEK
+    });
+
+    workerTaskDef.addContainer("Worker", {
+      image: ecs.ContainerImage.fromAsset("../../backend", {
+        file: "Dockerfile.worker"
+      }),
+      logging: ecs.LogDrivers.awsLogs({
+        streamPrefix: "breakeven-worker",
+        logGroup: workerLogGroup
+      }),
+      environment: {
+        TRADE_SIGNALS_TABLE: table.tableName,
+        METACOPIER_BASE_URL: "https://api-london.metacopier.io",
+        METACOPIER_SOCKET_URL: "wss://api.metacopier.io/ws/api/v1",
+        ALLOWED_TARGET_ACCOUNTS: commonEnv.ALLOWED_TARGET_ACCOUNTS,
+        AUTOMATION_USER_ID: commonEnv.AUTOMATION_USER_ID
+      },
+      secrets: {
+        METACOPIER_API_KEY: ecs.Secret.fromSecretsManager(metacopierSecret, "apiKey"),
+        METACOPIER_USER_EMAIL: ecs.Secret.fromSecretsManager(metacopierSecret, "userEmail")
+      }
+    });
+
+    const workerService = new ecs.FargateService(this, "BreakevenWorkerService", {
+      cluster: workerCluster,
+      taskDefinition: workerTaskDef,
+      desiredCount: 1,
+      assignPublicIp: true,
+      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+      serviceName: "tradingcopier-breakeven-worker"
+    });
+
     table.grantReadWriteData(parseSignalFn);
     table.grantReadWriteData(executeTradeFn);
     table.grantReadWriteData(getTradeHistoryFn);
     table.grantReadWriteData(getTradeByIdFn);
+    table.grantReadWriteData(runRuntimeSyncFn);
     table.grantReadWriteData(getLotSizeConfigFn);
     table.grantReadWriteData(updateLotSizeConfigFn);
     table.grantReadWriteData(getTargetAccountsConfigFn);
@@ -277,13 +356,21 @@ export class TradingCopierStack extends cdk.Stack {
     table.grantReadWriteData(getSocketFeatureStatusFn);
     table.grantReadWriteData(enableSocketFeatureFn);
     table.grantReadWriteData(telegramWebhookFn);
+    table.grantReadWriteData(workerTaskDef.taskRole);
 
     metacopierSecret.grantRead(executeTradeFn);
     metacopierSecret.grantRead(testConnectivityFn);
     metacopierSecret.grantRead(getSocketFeatureStatusFn);
     metacopierSecret.grantRead(enableSocketFeatureFn);
     metacopierSecret.grantRead(getTradeHistoryFn);
+    metacopierSecret.grantRead(runRuntimeSyncFn);
     metacopierSecret.grantRead(telegramWebhookFn);
+    metacopierSecret.grantRead(workerTaskDef.taskRole);
+
+    new events.Rule(this, "RuntimeSyncScheduleRule", {
+      schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
+      targets: [new targets.LambdaFunction(runRuntimeSyncFn)]
+    });
 
     const corsOrigins = (
       process.env.CORS_ALLOW_ORIGINS?.trim() ||
@@ -418,6 +505,10 @@ export class TradingCopierStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, "MetaCopierSecretArn", {
       value: metacopierSecret.secretArn
+    });
+
+    new cdk.CfnOutput(this, "BreakevenWorkerServiceName", {
+      value: workerService.serviceName
     });
 
     new cdk.CfnOutput(this, "CognitoHostedUiDomain", {

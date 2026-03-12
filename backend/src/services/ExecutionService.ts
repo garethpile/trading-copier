@@ -172,7 +172,7 @@ export class ExecutionService {
         destinationBrokerSymbol,
         legs: legResults
       },
-      errorMessage: `Executed ${successfulLegs.length}/${tpLevels.length} TP legs`
+      errorMessage: `Executed ${successfulLegs.length}/${tpLevels.length} TP legs${failedLegs.length > 0 ? ` - ${failedLegs.map((leg) => `TP${leg.leg}: ${leg.message}`).join(" | ")}` : ""}`
     });
 
     const legFailureSummary = failedLegs.map((leg) => `TP${leg.leg}: ${leg.message}`).join(" | ");

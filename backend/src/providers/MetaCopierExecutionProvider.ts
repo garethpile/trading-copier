@@ -15,6 +15,36 @@ const toPlainJson = (value: unknown): unknown => {
   }
 };
 
+const extractErrorMessage = (value: unknown): string | undefined => {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (!value || typeof value !== "object") return undefined;
+  const obj = value as GenericObject;
+
+  const errors = obj.errors;
+  if (Array.isArray(errors) && errors.length > 0) {
+    const first = errors[0];
+    if (typeof first === "string" && first.trim()) return first.trim();
+    if (first && typeof first === "object") {
+      const nested = first as GenericObject;
+      const nestedMsg =
+        (typeof nested.message === "string" && nested.message.trim()) ||
+        (typeof nested.error === "string" && nested.error.trim()) ||
+        (typeof nested.title === "string" && nested.title.trim()) ||
+        (typeof nested.detail === "string" && nested.detail.trim());
+      if (nestedMsg) return nestedMsg;
+    }
+  }
+
+  const direct =
+    (typeof obj.message === "string" && obj.message.trim()) ||
+    (typeof obj.error === "string" && obj.error.trim()) ||
+    (typeof obj.title === "string" && obj.title.trim()) ||
+    (typeof obj.detail === "string" && obj.detail.trim());
+  if (direct) return direct;
+
+  return undefined;
+};
+
 export class MetaCopierExecutionProvider implements ExecutionProvider {
   private readonly client = new SecretsManagerClient({});
   private secretCache?: MetaCopierSecret;
@@ -290,7 +320,7 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
       return {
         status: "FAILED",
         requestId,
-        message: `MetaCopier call failed: ${response.status}`,
+        message: `MetaCopier error ${response.status}: ${extractErrorMessage(body) ?? response.statusText ?? "Unknown error"}`,
         providerResponse: {
           status: response.status,
           statusText: response.statusText,

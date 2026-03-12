@@ -57,6 +57,21 @@ const extractOrderType = (position: Obj, side: "BUY" | "SELL"): "Buy" | "Sell" =
   return side === "BUY" ? "Buy" : "Sell";
 };
 
+const normalizeSymbol = (value: string): string => value.replace(/[^A-Z0-9]/gi, "").toUpperCase();
+
+const extractPositionSymbol = (position: Obj): string | undefined => {
+  const symbol = asString(position.symbol ?? position.instrument ?? position.asset);
+  return symbol ? normalizeSymbol(symbol) : undefined;
+};
+
+const extractPositionSide = (position: Obj): "BUY" | "SELL" | undefined => {
+  const raw = asString(position.orderType ?? position.dealType ?? position.side ?? position.type)?.toLowerCase();
+  if (!raw) return undefined;
+  if (raw.includes("buy")) return "BUY";
+  if (raw.includes("sell")) return "SELL";
+  return undefined;
+};
+
 export class TradeRuntimeSyncService {
   private readonly secretsClient = new SecretsManagerClient({});
   private secretCache?: MetaCopierSecret;
@@ -66,6 +81,7 @@ export class TradeRuntimeSyncService {
   private readonly envApiKey: string;
   private readonly envUserEmail?: string;
   private readonly requestTimeoutMs: number;
+  private readonly requestMatchWindowMs: number;
 
   constructor(private readonly repository: TradeRepository) {
     this.baseUrl = process.env.METACOPIER_BASE_URL ?? "https://api-london.metacopier.io";
@@ -74,6 +90,10 @@ export class TradeRuntimeSyncService {
     this.envApiKey = process.env.METACOPIER_API_KEY?.trim() ?? "";
     this.envUserEmail = process.env.METACOPIER_USER_EMAIL?.trim() || undefined;
     this.requestTimeoutMs = Number(process.env.METACOPIER_REQUEST_TIMEOUT_MS ?? "3000");
+    this.requestMatchWindowMs = Math.max(
+      60_000,
+      Number(process.env.REQUEST_MATCH_WINDOW_MS ?? String(15 * 60 * 1000))
+    );
   }
 
   private nextRequestId(): number {
@@ -239,20 +259,49 @@ export class TradeRuntimeSyncService {
 
       const legs = toArray(providerResponse.legs);
       const openPositions = account.positions;
-      const openReqIds = new Set(openPositions.map((p) => extractRequestId(p)).filter((v): v is number => v !== undefined));
+      const tradeCreatedMs = Date.parse(trade.createdAt);
+      const expectedSymbols = new Set(
+        [
+          normalizeSymbol(trade.symbol),
+          asString(providerResponse.destinationBrokerSymbol)
+            ? normalizeSymbol(String(providerResponse.destinationBrokerSymbol))
+            : undefined
+        ].filter((v): v is string => Boolean(v))
+      );
+      const matchedOpenPositions = openPositions.filter((p) => {
+        const side = extractPositionSide(p);
+        const symbol = extractPositionSymbol(p);
+        if (!(side === trade.side && !!symbol && expectedSymbols.has(symbol))) return false;
+        if (!Number.isFinite(tradeCreatedMs)) return true;
+        const openTime = asString(p.openTime ?? p.openedAt ?? p.time);
+        if (!openTime) return true;
+        const openMs = Date.parse(openTime);
+        if (!Number.isFinite(openMs)) return true;
+        return Math.abs(openMs - tradeCreatedMs) <= this.requestMatchWindowMs;
+      });
+      const openReqIds = new Set(
+        matchedOpenPositions.map((p) => extractRequestId(p)).filter((v): v is number => v !== undefined)
+      );
 
       const normalizedLegs: Obj[] = legs.map((leg) => {
         const legObj = toObj(leg) ?? {};
         const requestId = extractRequestId(legObj);
         const status = asString(legObj.status)?.toUpperCase();
         const position =
-          requestId !== undefined ? openPositions.find((p) => extractRequestId(p) === requestId) : undefined;
+          requestId !== undefined ? matchedOpenPositions.find((p) => extractRequestId(p) === requestId) : undefined;
         const currentStopLoss = position ? extractStopLoss(position) : undefined;
         let runtimeState: "OPEN" | "CLOSED" | "UNKNOWN" = "UNKNOWN";
         if (status === "FAILED") {
           runtimeState = "CLOSED";
         } else if (requestId !== undefined && status === "EXECUTED") {
           runtimeState = openReqIds.has(requestId) ? "OPEN" : "CLOSED";
+        }
+        const previousRuntimeState = asString(legObj.runtimeState)?.toUpperCase();
+        if (
+          runtimeState === "UNKNOWN" &&
+          (previousRuntimeState === "OPEN" || previousRuntimeState === "CLOSED")
+        ) {
+          runtimeState = previousRuntimeState;
         }
         return {
           ...legObj,
@@ -290,7 +339,7 @@ export class TradeRuntimeSyncService {
             continue;
           }
           if (triggerRequestId !== undefined && requestId === triggerRequestId) continue;
-          const position = openPositions.find((p) => extractRequestId(p) === requestId);
+          const position = matchedOpenPositions.find((p) => extractRequestId(p) === requestId);
           if (!position) {
             failedLegs.push({ leg: legNo, reason: "open position not found" });
             continue;

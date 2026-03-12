@@ -1,0 +1,6 @@
+
+> tradingcopier-backend@0.1.0 dev:be-automation
+> tsx src/local/startBreakevenAutomation.ts
+
+Starting break-even websocket automation worker...
+Breakeven automation websocket connected

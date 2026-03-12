@@ -55,8 +55,12 @@ export function TradeHistoryPage() {
   return (
     <div className="stack">
       {error ? <p className="error">{error}</p> : null}
-      <div className="card">
-        <div className="row spread">
+      <div className="row spread">
+        <h2>History</h2>
+        <div className="row">
+          <button onClick={load} disabled={loading}>
+            Refresh
+          </button>
           <div className="pill-group" role="tablist" aria-label="Account filter">
             <button
               type="button"
@@ -80,9 +84,6 @@ export function TradeHistoryPage() {
               All
             </button>
           </div>
-          <button onClick={load} disabled={loading}>
-            Refresh
-          </button>
         </div>
       </div>
       <TradeHistoryTable
