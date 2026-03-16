@@ -56,6 +56,7 @@ export function AdminPage() {
   const [socketActionMessageByAccount, setSocketActionMessageByAccount] = useState<Record<string, string>>({});
 
   const [connectivityResult, setConnectivityResult] = useState<ConnectivityTestResponse | null>(null);
+  const [connectivityLoading, setConnectivityLoading] = useState(false);
   const [managementError, setManagementError] = useState<string | undefined>();
   const [managementMessage, setManagementMessage] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
@@ -63,6 +64,23 @@ export function AdminPage() {
   const executionMode = accountsConfig?.executionMode ?? "DEMO";
   const statusClass = (value: string) =>
     value === "OK" || value === "SUCCESS" || value === "ENABLED" ? "status-ok" : "status-bad";
+
+  const runConnectivityTest = async () => {
+    try {
+      setConnectivityLoading(true);
+      setManagementError(undefined);
+      setConnectivityResult(await testConnectivity());
+    } catch (error) {
+      setConnectivityResult({
+        status: "FAILED",
+        provider: "MetaCopier",
+        message: "Connectivity test failed",
+        error: String(error)
+      });
+    } finally {
+      setConnectivityLoading(false);
+    }
+  };
 
   const accountRoles = useMemo(() => {
     const roles: Record<string, string[]> = {};
@@ -134,9 +152,43 @@ export function AdminPage() {
       .catch((error) => setManagementError(String(error)));
   }, []);
 
+  useEffect(() => {
+    void runConnectivityTest();
+  }, []);
+
   return (
     <div className="stack">
       <div className="admin-grid">
+        <CollapsibleCard title="MetaCopier Connectivity" defaultOpen className="admin-card-full">
+          <div className="row">
+            <button
+              type="button"
+              className="ghost"
+              disabled={connectivityLoading}
+              onClick={() => void runConnectivityTest()}
+            >
+              {connectivityLoading ? "Testing..." : "Test Connectivity"}
+            </button>
+          </div>
+
+          {connectivityResult ? (
+            <div>
+              <strong>Status:</strong>{" "}
+              <span className={statusClass(connectivityResult.status)}>{connectivityResult.status}</span>
+              <br />
+              <strong>Provider:</strong> {connectivityResult.provider}
+              <br />
+              <strong>Message:</strong> {connectivityResult.message}
+              {connectivityResult.error ? (
+                <>
+                  <br />
+                  <strong>Error:</strong> {connectivityResult.error}
+                </>
+              ) : null}
+            </div>
+          ) : null}
+        </CollapsibleCard>
+
         <CollapsibleCard title="Execution Routing" defaultOpen className="admin-card-full">
           <strong>Target Accounts</strong>
           {accountsConfig ? (
@@ -417,51 +469,6 @@ export function AdminPage() {
             </CollapsibleCard>
           );
         })}
-
-        <CollapsibleCard title="MetaCopier Connectivity" className="admin-card-half">
-          <div className="row">
-            <button
-              type="button"
-              className="ghost"
-              disabled={loading}
-              onClick={async () => {
-                try {
-                  setLoading(true);
-                  setManagementError(undefined);
-                  setConnectivityResult(await testConnectivity());
-                } catch (error) {
-                  setConnectivityResult({
-                    status: "FAILED",
-                    provider: "MetaCopier",
-                    message: "Connectivity test failed",
-                    error: String(error)
-                  });
-                } finally {
-                  setLoading(false);
-                }
-              }}
-            >
-              Test Connectivity
-            </button>
-          </div>
-
-          {connectivityResult ? (
-            <div>
-              <strong>Status:</strong>{" "}
-              <span className={statusClass(connectivityResult.status)}>{connectivityResult.status}</span>
-              <br />
-              <strong>Provider:</strong> {connectivityResult.provider}
-              <br />
-              <strong>Message:</strong> {connectivityResult.message}
-              {connectivityResult.error ? (
-                <>
-                  <br />
-                  <strong>Error:</strong> {connectivityResult.error}
-                </>
-              ) : null}
-            </div>
-          ) : null}
-        </CollapsibleCard>
 
         <CollapsibleCard title="Lot Sizes" className="admin-card-full">
           {lotConfig ? (

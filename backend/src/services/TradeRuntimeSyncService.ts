@@ -56,6 +56,8 @@ const extractOrderType = (position: Obj, side: "BUY" | "SELL"): "Buy" | "Sell" =
   if (raw?.includes("buy")) return "Buy";
   return side === "BUY" ? "Buy" : "Sell";
 };
+const MAX_TRADE_OPEN_POSITIONS = 20;
+const MAX_TRADE_HISTORY_EVENTS = 50;
 
 const normalizeSymbol = (value: string): string => value.replace(/[^A-Z0-9]/gi, "").toUpperCase();
 
@@ -199,11 +201,12 @@ export class TradeRuntimeSyncService {
     return map;
   }
 
-  private async moveStopLossToBe(input: {
+  private async modifyPositionTargets(input: {
     accountId: string;
     position: Obj;
     side: "BUY" | "SELL";
-    breakEvenPrice: number;
+    stopLoss: number;
+    takeProfit: number;
   }): Promise<{ ok: true } | { ok: false; reason: string }> {
     const positionId = extractPositionId(input.position);
     if (!positionId) return { ok: false, reason: "position id missing" };
@@ -222,8 +225,8 @@ export class TradeRuntimeSyncService {
         symbol,
         orderType: extractOrderType(input.position, input.side),
         openPrice: asNumber(input.position.openPrice) ?? 0,
-        stopLoss: input.breakEvenPrice,
-        takeProfit: asNumber(input.position.takeProfit) ?? 0,
+        stopLoss: input.stopLoss,
+        takeProfit: input.takeProfit,
         volume,
         requestId: this.nextRequestId()
       })
@@ -231,6 +234,21 @@ export class TradeRuntimeSyncService {
 
     if (result.ok || result.status === 204) return { ok: true };
     return { ok: false, reason: `HTTP ${result.status}` };
+  }
+
+  private async moveStopLossToBe(input: {
+    accountId: string;
+    position: Obj;
+    side: "BUY" | "SELL";
+    breakEvenPrice: number;
+  }): Promise<{ ok: true } | { ok: false; reason: string }> {
+    return this.modifyPositionTargets({
+      accountId: input.accountId,
+      position: input.position,
+      side: input.side,
+      stopLoss: input.breakEvenPrice,
+      takeProfit: asNumber(input.position.takeProfit) ?? 0
+    });
   }
 
   async sync(_userId: string, trades: TradeRecord[]): Promise<TradeRecord[]> {
@@ -287,8 +305,11 @@ export class TradeRuntimeSyncService {
         const legObj = toObj(leg) ?? {};
         const requestId = extractRequestId(legObj);
         const status = asString(legObj.status)?.toUpperCase();
-        const position =
-          requestId !== undefined ? matchedOpenPositions.find((p) => extractRequestId(p) === requestId) : undefined;
+        const openMatches =
+          requestId !== undefined
+            ? matchedOpenPositions.filter((p) => extractRequestId(p) === requestId)
+            : [];
+        const position = openMatches[0];
         const currentStopLoss = position ? extractStopLoss(position) : undefined;
         let runtimeState: "OPEN" | "CLOSED" | "UNKNOWN" = "UNKNOWN";
         if (status === "FAILED") {
@@ -307,6 +328,10 @@ export class TradeRuntimeSyncService {
           ...legObj,
           ...(requestId !== undefined ? { requestId } : {}),
           ...(currentStopLoss !== undefined ? { currentStopLoss } : {}),
+          runtimePayload: {
+            matchedOpenPositions: openMatches.slice(0, MAX_TRADE_OPEN_POSITIONS),
+            matchedHistoryEvents: []
+          },
           runtimeState
         };
       });
@@ -318,8 +343,75 @@ export class TradeRuntimeSyncService {
       const triggerRequestId = triggerLeg ? extractRequestId(triggerLeg) : undefined;
       const triggerTakeProfit = triggerLeg ? asNumber(triggerLeg.takeProfit) : undefined;
       const existingBe = toObj(providerResponse.breakeven) ?? {};
+      const existingFinalLegTrail = toObj(providerResponse.finalLegTrail) ?? {};
+      const existingSignalMagnitudeRebase = toObj(providerResponse.signalMagnitudeRebase) ?? {};
+      const closedExecutedLegs = normalizedLegs.filter(
+        (l) => asString(l.status) === "EXECUTED" && asString(l.runtimeState) === "CLOSED"
+      );
+      const openExecutedLegs = normalizedLegs.filter(
+        (l) => asString(l.status) === "EXECUTED" && asString(l.runtimeState) === "OPEN"
+      );
 
       let breakeven = existingBe;
+      let finalLegTrail = existingFinalLegTrail;
+      let signalMagnitudeRebase = existingSignalMagnitudeRebase;
+      let nextErrorMessage = trade.errorMessage;
+
+      if (openExecutedLegs.length > 0 && asString(existingSignalMagnitudeRebase.status) !== "COMPLETED") {
+        const movedLegs: Array<{ leg: number; requestId: number; newStopLoss: number; newTakeProfit: number }> = [];
+        const failedLegs: Array<{ leg: number; reason: string }> = [];
+        const riskDistance = Math.abs(trade.entry - trade.stopLoss);
+
+        for (const leg of openExecutedLegs) {
+          const legNo = asNumber(leg.leg);
+          const requestId = extractRequestId(leg);
+          if (!legNo || requestId === undefined) {
+            failedLegs.push({ leg: legNo ?? -1, reason: "missing leg/requestId" });
+            continue;
+          }
+          const signalTp = trade.takeProfits[legNo - 1];
+          if (!Number.isFinite(signalTp) || !Number.isFinite(riskDistance)) {
+            failedLegs.push({ leg: legNo, reason: "missing signal TP or SL distance" });
+            continue;
+          }
+          const position = matchedOpenPositions.find((p) => extractRequestId(p) === requestId);
+          const openPrice = position ? asNumber(position.openPrice) : undefined;
+          if (!position || openPrice === undefined || !Number.isFinite(openPrice)) {
+            failedLegs.push({ leg: legNo, reason: "open position/openPrice unavailable" });
+            continue;
+          }
+          const newTakeProfit = openPrice + (signalTp - trade.entry);
+          const newStopLoss = trade.side === "BUY" ? openPrice - riskDistance : openPrice + riskDistance;
+          const moved = await this.modifyPositionTargets({
+            accountId: trade.targetAccount,
+            position,
+            side: trade.side,
+            stopLoss: newStopLoss,
+            takeProfit: newTakeProfit
+          });
+          if (!moved.ok) {
+            failedLegs.push({ leg: legNo, reason: moved.reason });
+            continue;
+          }
+          leg.currentStopLoss = newStopLoss;
+          leg.takeProfit = newTakeProfit;
+          movedLegs.push({ leg: legNo, requestId, newStopLoss, newTakeProfit });
+        }
+
+        if (movedLegs.length > 0 || failedLegs.length > 0) {
+          signalMagnitudeRebase = {
+            status: failedLegs.length === 0 ? "COMPLETED" : movedLegs.length > 0 ? "PARTIAL" : "FAILED",
+            triggeredAt: new Date().toISOString(),
+            movedLegs,
+            failedLegs
+          };
+          if (failedLegs.length > 0) {
+            nextErrorMessage = `Signal magnitude rebase failed for ${failedLegs.length} leg(s)`;
+          } else if (nextErrorMessage?.startsWith("Signal magnitude rebase failed")) {
+            nextErrorMessage = undefined;
+          }
+        }
+      }
       if (triggerClosed && asString(existingBe.status) !== "COMPLETED") {
         const movedLegs: Array<{ leg: number; positionId: string }> = [];
         const failedLegs: Array<{ leg: number; reason: string }> = [];
@@ -371,13 +463,84 @@ export class TradeRuntimeSyncService {
             movedLegs,
             failedLegs
           };
+          if (failedLegs.length > 0) {
+            nextErrorMessage = "BE move partially failed";
+          } else if (nextErrorMessage && nextErrorMessage.startsWith("BE move")) {
+            nextErrorMessage = undefined;
+          }
+        }
+      }
+
+      if (
+        openExecutedLegs.length === 1 &&
+        closedExecutedLegs.length >= 2 &&
+        asString(existingFinalLegTrail.status) !== "COMPLETED"
+      ) {
+        const lastLeg = openExecutedLegs[0];
+        const lastLegNo = asNumber(lastLeg.leg);
+        const lastLegRequestId = extractRequestId(lastLeg);
+        const tp1 = trade.takeProfits[0];
+        const tp2 = trade.takeProfits[1];
+        if (!lastLegNo || lastLegRequestId === undefined || !Number.isFinite(tp1) || !Number.isFinite(tp2)) {
+          finalLegTrail = {
+            status: "FAILED",
+            triggeredAt: new Date().toISOString(),
+            reason: "missing leg/requestId or TP1/TP2"
+          };
+        } else {
+          const position = matchedOpenPositions.find((p) => extractRequestId(p) === lastLegRequestId);
+          if (!position) {
+            finalLegTrail = {
+              status: "FAILED",
+              triggeredAt: new Date().toISOString(),
+              reason: "last open position not found",
+              leg: lastLegNo,
+              requestId: lastLegRequestId
+            };
+          } else {
+            const midpoint = (tp1 + tp2) / 2;
+            const moved = await this.moveStopLossToBe({
+              accountId: trade.targetAccount,
+              position,
+              side: trade.side,
+              breakEvenPrice: midpoint
+            });
+            if (moved.ok) {
+              lastLeg.currentStopLoss = midpoint;
+              finalLegTrail = {
+                status: "COMPLETED",
+                triggeredAt: new Date().toISOString(),
+                leg: lastLegNo,
+                requestId: lastLegRequestId,
+                newStopLoss: midpoint
+              };
+              if (nextErrorMessage === "Final leg SL move failed") {
+                nextErrorMessage = undefined;
+              }
+            } else {
+              finalLegTrail = {
+                status: "FAILED",
+                triggeredAt: new Date().toISOString(),
+                leg: lastLegNo,
+                requestId: lastLegRequestId,
+                reason: moved.reason
+              };
+              nextErrorMessage = "Final leg SL move failed";
+            }
+          }
         }
       }
 
       const nextProviderResponse: Obj = {
         ...providerResponse,
         legs: normalizedLegs,
+        runtimePayload: {
+          matchedOpenPositions: matchedOpenPositions.slice(0, MAX_TRADE_OPEN_POSITIONS),
+          matchedHistoryEvents: ([] as Obj[]).slice(-MAX_TRADE_HISTORY_EVENTS)
+        },
+        signalMagnitudeRebase,
         breakeven,
+        finalLegTrail,
         lastLiveSyncAt: new Date().toISOString()
       };
 
@@ -386,7 +549,7 @@ export class TradeRuntimeSyncService {
         signalId: trade.signalId,
         createdAt: trade.createdAt,
         providerResponse: nextProviderResponse,
-        errorMessage: toArray(toObj(breakeven)?.failedLegs).length > 0 ? "BE move partially failed" : trade.errorMessage
+        errorMessage: nextErrorMessage
       });
 
       updated.push({
