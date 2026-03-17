@@ -27,7 +27,7 @@ export default function App() {
   if (!authed) {
     return (
       <main className="container">
-        <h1>TRADING COPIER</h1>
+        <h1>Trading Copier</h1>
         <LoginForm onAuthenticated={() => setAuthed(true)} />
       </main>
     );
@@ -37,7 +37,7 @@ export default function App() {
     <main className="container stack">
       <header className="row spread">
         <div className="row app-header-title">
-          <h1>TRADING COPIER</h1>
+          <h1>Trading Copier</h1>
           <span className="screen-heading">{pageTitle[view]}</span>
         </div>
         <div className="row">
