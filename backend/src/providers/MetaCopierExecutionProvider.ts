@@ -22,16 +22,22 @@ const extractErrorMessage = (value: unknown): string | undefined => {
 
   const errors = obj.errors;
   if (Array.isArray(errors) && errors.length > 0) {
-    const first = errors[0];
-    if (typeof first === "string" && first.trim()) return first.trim();
-    if (first && typeof first === "object") {
-      const nested = first as GenericObject;
-      const nestedMsg =
-        (typeof nested.message === "string" && nested.message.trim()) ||
-        (typeof nested.error === "string" && nested.error.trim()) ||
-        (typeof nested.title === "string" && nested.title.trim()) ||
-        (typeof nested.detail === "string" && nested.detail.trim());
-      if (nestedMsg) return nestedMsg;
+    const messages = errors
+      .map((entry) => {
+        if (typeof entry === "string" && entry.trim()) return entry.trim();
+        if (!entry || typeof entry !== "object") return undefined;
+        const nested = entry as GenericObject;
+        return (
+          (typeof nested.message === "string" && nested.message.trim()) ||
+          (typeof nested.error === "string" && nested.error.trim()) ||
+          (typeof nested.title === "string" && nested.title.trim()) ||
+          (typeof nested.detail === "string" && nested.detail.trim()) ||
+          (typeof nested.code === "string" && nested.code.trim())
+        );
+      })
+      .filter((msg): msg is string => Boolean(msg));
+    if (messages.length > 0) {
+      return messages.join(" | ");
     }
   }
 
@@ -309,6 +315,12 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
       }
 
       const body = await this.readBody(response);
+      const extractedError = extractErrorMessage(body) ?? response.statusText ?? "Unknown error";
+      const brokerRejection =
+        response.status === 400 && /\bBROKER_REJECTION\b/i.test(extractedError);
+      const rejectionHint = brokerRejection
+        ? ` Broker rejected order; likely causes: invalid symbol for account, broker min distance/market rules, or instrument not tradable now. symbol=${symbol} account=${input.targetAccount}`
+        : "";
       console.error("MetaCopier executeTrade provider failure", {
         status: response.status,
         statusText: response.statusText,
@@ -320,7 +332,7 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
       return {
         status: "FAILED",
         requestId,
-        message: `MetaCopier error ${response.status}: ${extractErrorMessage(body) ?? response.statusText ?? "Unknown error"}`,
+        message: `MetaCopier error ${response.status}: ${extractedError}${rejectionHint}`,
         providerResponse: {
           status: response.status,
           statusText: response.statusText,

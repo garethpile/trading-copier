@@ -17,6 +17,8 @@ const asNumber = (value: unknown): number | undefined => {
 
 const asString = (value: unknown): string | undefined =>
   typeof value === "string" && value.trim() ? value.trim() : undefined;
+const toObj = (value: unknown): GenericObject | undefined =>
+  value && typeof value === "object" ? (value as GenericObject) : undefined;
 
 const extractRequestId = (position: GenericObject): number | undefined => {
   const providerResponse =
@@ -86,6 +88,72 @@ const extractEventTimeMs = (value: GenericObject): number | undefined => {
     if (Number.isFinite(parsed)) return parsed;
   }
   return undefined;
+};
+
+const extractTakeProfit = (position: GenericObject): number | undefined =>
+  asNumber(position.takeProfit ?? position.tp);
+const extractOpenTimeMs = (position: GenericObject): number | undefined => {
+  const raw = asString(position.openTime ?? position.openedAt ?? position.time);
+  if (!raw) return undefined;
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const extractLatestClosePrice = (events: GenericObject[]): number | undefined => {
+  if (events.length === 0) return undefined;
+  const sorted = [...events].sort((a, b) => {
+    const at = extractEventTimeMs(a) ?? 0;
+    const bt = extractEventTimeMs(b) ?? 0;
+    return at - bt;
+  });
+  for (let i = sorted.length - 1; i >= 0; i -= 1) {
+    const event = sorted[i];
+    const closePrice = asNumber(event.closePrice ?? event.closedPrice ?? event.price);
+    if (closePrice !== undefined && Number.isFinite(closePrice)) return closePrice;
+  }
+  return undefined;
+};
+
+const pickMatchedOpenPosition = (input: {
+  leg: GenericObject;
+  matchedOpenPositions: GenericObject[];
+  usedPositionIds: Set<string>;
+}): GenericObject | undefined => {
+  const requestId = extractRequestId(input.leg);
+  const available = input.matchedOpenPositions.filter((position) => {
+    const positionId = extractPositionId(position);
+    return !positionId || !input.usedPositionIds.has(positionId);
+  });
+  if (available.length === 0) return undefined;
+
+  if (requestId !== undefined) {
+    const byRequestId = available.find((position) => extractRequestId(position) === requestId);
+    if (byRequestId) return byRequestId;
+  }
+
+  const legTakeProfit = asNumber(input.leg.takeProfit);
+  if (legTakeProfit !== undefined && Number.isFinite(legTakeProfit)) {
+    const tpMatches = available
+      .map((position) => ({
+        position,
+        gap: Math.abs((extractTakeProfit(position) ?? Number.NaN) - legTakeProfit)
+      }))
+      .filter((item) => Number.isFinite(item.gap))
+      .sort((a, b) => a.gap - b.gap);
+    if (tpMatches.length > 0 && tpMatches[0].gap <= 1e-6) {
+      return tpMatches[0].position;
+    }
+    if (tpMatches.length > 0) {
+      return tpMatches[0].position;
+    }
+  }
+
+  const sortedByOpenTime = [...available].sort((a, b) => {
+    const at = extractOpenTimeMs(a) ?? 0;
+    const bt = extractOpenTimeMs(b) ?? 0;
+    return at - bt;
+  });
+  return sortedByOpenTime[0];
 };
 
 export class BreakevenWebsocketAutomation {
@@ -248,25 +316,34 @@ export class BreakevenWebsocketAutomation {
       return Math.abs(eventMs - tradeCreatedMs) <= this.requestMatchWindowMs;
     });
 
+    const usedPositionIds = new Set<string>();
     const normalizedLegs: GenericObject[] = legs.map((leg) => {
       const requestId = extractRequestId(leg);
-      const legStatus = asString(leg["status"])?.toUpperCase();
-      const openMatches =
-        requestId !== undefined
-          ? matchedOpenPositions.filter((position) => extractRequestId(position) === requestId)
-          : [];
+      const originalStatus = asString(leg["status"])?.toUpperCase();
+      const matchedPosition = pickMatchedOpenPosition({
+        leg,
+        matchedOpenPositions,
+        usedPositionIds
+      });
+      const openMatches = matchedPosition ? [matchedPosition] : [];
+      const matchedPositionId = matchedPosition ? extractPositionId(matchedPosition) : undefined;
+      if (matchedPositionId) {
+        usedPositionIds.add(matchedPositionId);
+      }
       const historyMatches =
         requestId !== undefined
           ? matchedHistoryEvents.filter((event) => extractRequestId(event) === requestId)
           : [];
       let runtimeState: "OPEN" | "CLOSED" | "UNKNOWN" = "UNKNOWN";
 
-      if (legStatus === "FAILED") {
+      if (openMatches.length > 0) {
+        runtimeState = "OPEN";
+      } else if (originalStatus === "FAILED") {
         runtimeState = "CLOSED";
       } else if (requestId !== undefined) {
         if (openMatches.length > 0) {
           runtimeState = "OPEN";
-        } else if (legStatus === "EXECUTED") {
+        } else if (originalStatus === "EXECUTED") {
           runtimeState = "CLOSED";
         }
       }
@@ -277,10 +354,19 @@ export class BreakevenWebsocketAutomation {
       ) {
         runtimeState = previousRuntimeState;
       }
+      const adoptedFromManual = originalStatus === "FAILED" && runtimeState === "OPEN";
+      const normalizedStatus =
+        adoptedFromManual || originalStatus === "EXECUTED"
+          ? "EXECUTED"
+          : originalStatus === "FAILED"
+            ? "FAILED"
+            : originalStatus ?? "UNKNOWN";
 
       return {
         ...leg,
         ...(requestId !== undefined ? { requestId } : {}),
+        status: normalizedStatus,
+        ...(adoptedFromManual ? { adoptedFromManual: true } : {}),
         runtimePayload: {
           matchedOpenPositions: openMatches.slice(0, MAX_TRADE_OPEN_POSITIONS),
           matchedHistoryEvents: historyMatches.slice(-MAX_TRADE_HISTORY_EVENTS)
@@ -302,6 +388,22 @@ export class BreakevenWebsocketAutomation {
     const signalMagnitudeRebase = (providerResponse.signalMagnitudeRebase as GenericObject | undefined) ?? {};
     let nextErrorMessage = trade.errorMessage;
     let nextSignalMagnitudeRebase = signalMagnitudeRebase;
+    const adoptedLegs = normalizedLegs.filter((leg) => leg.adoptedFromManual === true);
+    const runtimeAdoption =
+      adoptedLegs.length > 0
+        ? {
+            status: "COMPLETED",
+            adoptedAt: new Date().toISOString(),
+            adoptedLegs: adoptedLegs.map((leg) => ({
+              leg: asNumber(leg.leg) ?? -1,
+              requestId: extractRequestId(leg)
+            }))
+          }
+        : (providerResponse.runtimeAdoption as GenericObject | undefined) ?? {};
+
+    if (adoptedLegs.length > 0 && (nextErrorMessage ?? "").includes("Executed 0/")) {
+      nextErrorMessage = undefined;
+    }
 
     if (openExecutedLegs.length > 0 && asString(signalMagnitudeRebase.status) !== "COMPLETED") {
       const movedLegs: Array<{ leg: number; requestId: number; newStopLoss: number; newTakeProfit: number }> = [];
@@ -321,7 +423,9 @@ export class BreakevenWebsocketAutomation {
           continue;
         }
 
-        const openPosition = matchedOpenPositions.find((position) => extractRequestId(position) === requestId);
+        const legOpenPosition = toArray(toObj(leg.runtimePayload)?.matchedOpenPositions)[0];
+        const openPosition =
+          matchedOpenPositions.find((position) => extractRequestId(position) === requestId) ?? legOpenPosition;
         const openPrice = openPosition ? asNumber(openPosition.openPrice) : undefined;
         if (!openPosition || openPrice === undefined || !Number.isFinite(openPrice)) {
           failedLegs.push({ leg: legNo, reason: "open position/openPrice unavailable" });
@@ -381,7 +485,9 @@ export class BreakevenWebsocketAutomation {
         }
         if (triggerRequestId !== undefined && legRequestId === triggerRequestId) continue;
 
-        const openPosition = matchedOpenPositions.find((position) => extractRequestId(position) === legRequestId);
+        const legOpenPosition = toArray(toObj(leg.runtimePayload)?.matchedOpenPositions)[0];
+        const openPosition =
+          matchedOpenPositions.find((position) => extractRequestId(position) === legRequestId) ?? legOpenPosition;
         if (!openPosition) {
           failedLegs.push({ leg: legNo, reason: "position not currently open" });
           continue;
@@ -424,60 +530,66 @@ export class BreakevenWebsocketAutomation {
     }
 
     let nextFinalLegTrail = finalLegTrail;
-    if (
-      openExecutedLegs.length === 1 &&
-      closedExecutedLegs.length >= 2 &&
-      asString(finalLegTrail.status) !== "COMPLETED"
-    ) {
-      const lastLeg = openExecutedLegs[0];
-      const lastLegNo = asNumber(lastLeg.leg);
-      const lastLegRequestId = extractRequestId(lastLeg);
-      const tp1 = trade.takeProfits[0];
-      const tp2 = trade.takeProfits[1];
-      if (!lastLegNo || lastLegRequestId === undefined || !Number.isFinite(tp1) || !Number.isFinite(tp2)) {
+    const leg2 = normalizedLegs.find(
+      (leg) =>
+        asNumber(leg.leg) === 2 &&
+        asString(leg.status) === "EXECUTED" &&
+        asString(leg.runtimeState) === "CLOSED"
+    );
+    if (openExecutedLegs.length > 0 && leg2 && asString(finalLegTrail.status) !== "COMPLETED") {
+      const leg2HistoryEvents = toArray(toObj(leg2.runtimePayload)?.matchedHistoryEvents);
+      const leg2ClosePrice = extractLatestClosePrice(leg2HistoryEvents) ?? asNumber(leg2.takeProfit);
+      if (leg2ClosePrice === undefined || !Number.isFinite(leg2ClosePrice)) {
         nextFinalLegTrail = {
           status: "FAILED",
           triggeredAt: new Date().toISOString(),
-          reason: "missing leg/requestId or TP1/TP2"
+          reason: "leg2 close price unavailable"
         };
       } else {
-        const lastPosition = matchedOpenPositions.find((position) => extractRequestId(position) === lastLegRequestId);
-        if (!lastPosition) {
-          nextFinalLegTrail = {
-            status: "FAILED",
-            triggeredAt: new Date().toISOString(),
-            reason: "last open position not found"
-          };
-        } else {
-          const midpoint = (tp1 + tp2) / 2;
+        const targetStopLoss = trade.entry + (leg2ClosePrice - trade.entry) / 2;
+        const movedLegs: Array<{ leg: number; requestId: number; newStopLoss: number }> = [];
+        const failedLegs: Array<{ leg: number; reason: string }> = [];
+        for (const openLeg of openExecutedLegs) {
+          const legNo = asNumber(openLeg.leg);
+          const legRequestId = extractRequestId(openLeg);
+          if (!legNo || legRequestId === undefined) {
+            failedLegs.push({ leg: legNo ?? -1, reason: "missing leg/requestId" });
+            continue;
+          }
+          const openLegPosition = toArray(toObj(openLeg.runtimePayload)?.matchedOpenPositions)[0];
+          const openPosition =
+            matchedOpenPositions.find((position) => extractRequestId(position) === legRequestId) ?? openLegPosition;
+          if (!openPosition) {
+            failedLegs.push({ leg: legNo, reason: "open position not found" });
+            continue;
+          }
           const moved = await this.modifyPositionStopLossToBreakEven({
             accountId: trade.targetAccount,
-            position: lastPosition,
+            position: openPosition,
             side: trade.side,
-            breakEvenPrice: midpoint
+            breakEvenPrice: targetStopLoss
           });
-          if (moved.ok) {
-            lastLeg.currentStopLoss = midpoint;
-            nextFinalLegTrail = {
-              status: "COMPLETED",
-              triggeredAt: new Date().toISOString(),
-              leg: lastLegNo,
-              requestId: lastLegRequestId,
-              newStopLoss: midpoint
-            };
-            if (nextErrorMessage === "Final leg SL move failed") {
-              nextErrorMessage = undefined;
-            }
-          } else {
-            nextFinalLegTrail = {
-              status: "FAILED",
-              triggeredAt: new Date().toISOString(),
-              leg: lastLegNo,
-              requestId: lastLegRequestId,
-              reason: moved.reason
-            };
-            nextErrorMessage = "Final leg SL move failed";
+          if (!moved.ok) {
+            failedLegs.push({ leg: legNo, reason: moved.reason });
+            continue;
           }
+          openLeg.currentStopLoss = targetStopLoss;
+          movedLegs.push({ leg: legNo, requestId: legRequestId, newStopLoss: targetStopLoss });
+        }
+
+        nextFinalLegTrail = {
+          status: failedLegs.length === 0 ? "COMPLETED" : movedLegs.length > 0 ? "PARTIAL" : "FAILED",
+          triggeredAt: new Date().toISOString(),
+          sourceLeg: 2,
+          sourceClosePrice: leg2ClosePrice,
+          targetStopLoss,
+          movedLegs,
+          failedLegs
+        };
+        if (failedLegs.length > 0) {
+          nextErrorMessage = "Final leg SL move failed";
+        } else if (nextErrorMessage === "Final leg SL move failed") {
+          nextErrorMessage = undefined;
         }
       }
     }
@@ -492,7 +604,8 @@ export class BreakevenWebsocketAutomation {
       lastLiveSyncAt: new Date().toISOString(),
       signalMagnitudeRebase: nextSignalMagnitudeRebase,
       breakeven: nextBreakeven,
-      finalLegTrail: nextFinalLegTrail
+      finalLegTrail: nextFinalLegTrail,
+      runtimeAdoption
     };
 
     await this.repository.updateProviderResponse({
