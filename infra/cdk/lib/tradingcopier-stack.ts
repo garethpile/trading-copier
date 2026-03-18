@@ -140,20 +140,11 @@ export class TradingCopierStack extends cdk.Stack {
       userPoolClient.node.addDependency(googleIdp);
     }
 
-    const metacopierApiKeySeed = process.env.METACOPIER_API_KEY?.trim();
-    if (!metacopierApiKeySeed) {
-      throw new Error("METACOPIER_API_KEY environment variable is required for deployment");
-    }
-    const metacopierUserEmailSeed = process.env.METACOPIER_USER_EMAIL?.trim();
-    const metacopierSecret = new secretsmanager.Secret(this, "MetaCopierSecret", {
-      secretName: "tradingcopier/metacopier",
-      secretStringValue: cdk.SecretValue.unsafePlainText(
-        JSON.stringify({
-          apiKey: metacopierApiKeySeed,
-          ...(metacopierUserEmailSeed ? { userEmail: metacopierUserEmailSeed } : {})
-        })
-      )
-    });
+    const metacopierSecret = secretsmanager.Secret.fromSecretNameV2(
+      this,
+      "MetaCopierSecret",
+      "tradingcopier/metacopier"
+    );
 
     const lambdaCode = lambda.Code.fromAsset("../../backend/dist");
 
