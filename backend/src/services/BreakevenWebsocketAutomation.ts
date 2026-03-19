@@ -92,6 +92,9 @@ const extractEventTimeMs = (value: GenericObject): number | undefined => {
 
 const extractTakeProfit = (position: GenericObject): number | undefined =>
   asNumber(position.takeProfit ?? position.tp);
+const PRICE_VERIFY_TOLERANCE = 0.02;
+const valuesMatch = (expected: number, actual: number | undefined): boolean =>
+  actual !== undefined && Math.abs(actual - expected) <= PRICE_VERIFY_TOLERANCE;
 const extractOpenTimeMs = (position: GenericObject): number | undefined => {
   const raw = asString(position.openTime ?? position.openedAt ?? position.time);
   if (!raw) return undefined;
@@ -443,13 +446,21 @@ export class BreakevenWebsocketAutomation {
         });
 
         if (!modifyResult.ok) {
-          failedLegs.push({ leg: legNo, reason: modifyResult.reason });
+          const reason = modifyResult.verifyDetails
+            ? `${modifyResult.reason}: ${JSON.stringify(modifyResult.verifyDetails)}`
+            : modifyResult.reason;
+          failedLegs.push({ leg: legNo, reason });
           continue;
         }
 
-        leg.currentStopLoss = newStopLoss;
-        leg.takeProfit = newTakeProfit;
-        movedLegs.push({ leg: legNo, requestId, newStopLoss, newTakeProfit });
+        leg.currentStopLoss = modifyResult.verifiedStopLoss;
+        leg.takeProfit = modifyResult.verifiedTakeProfit;
+        movedLegs.push({
+          leg: legNo,
+          requestId,
+          newStopLoss: modifyResult.verifiedStopLoss,
+          newTakeProfit: modifyResult.verifiedTakeProfit
+        });
       }
 
       if (movedLegs.length > 0 || failedLegs.length > 0) {
@@ -507,9 +518,13 @@ export class BreakevenWebsocketAutomation {
         });
 
         if (modifyResult.ok) {
+          leg.currentStopLoss = modifyResult.verifiedStopLoss;
           movedLegs.push({ leg: legNo, positionId });
         } else {
-          failedLegs.push({ leg: legNo, reason: modifyResult.reason });
+          const reason = modifyResult.verifyDetails
+            ? `${modifyResult.reason}: ${JSON.stringify(modifyResult.verifyDetails)}`
+            : modifyResult.reason;
+          failedLegs.push({ leg: legNo, reason });
         }
       }
 
@@ -570,11 +585,14 @@ export class BreakevenWebsocketAutomation {
             breakEvenPrice: targetStopLoss
           });
           if (!moved.ok) {
-            failedLegs.push({ leg: legNo, reason: moved.reason });
+            const reason = moved.verifyDetails
+              ? `${moved.reason}: ${JSON.stringify(moved.verifyDetails)}`
+              : moved.reason;
+            failedLegs.push({ leg: legNo, reason });
             continue;
           }
-          openLeg.currentStopLoss = targetStopLoss;
-          movedLegs.push({ leg: legNo, requestId: legRequestId, newStopLoss: targetStopLoss });
+          openLeg.currentStopLoss = moved.verifiedStopLoss;
+          movedLegs.push({ leg: legNo, requestId: legRequestId, newStopLoss: moved.verifiedStopLoss });
         }
 
         nextFinalLegTrail = {
@@ -623,7 +641,10 @@ export class BreakevenWebsocketAutomation {
     side: "BUY" | "SELL";
     stopLoss: number;
     takeProfit: number;
-  }): Promise<{ ok: true } | { ok: false; reason: string }> {
+  }): Promise<
+    | { ok: true; verifiedStopLoss: number; verifiedTakeProfit: number }
+    | { ok: false; reason: string; verifyDetails?: GenericObject }
+  > {
     const positionId = extractPositionId(input.position);
     if (!positionId) {
       return { ok: false, reason: "position id missing" };
@@ -665,7 +686,43 @@ export class BreakevenWebsocketAutomation {
           validateStatus: (status) => status === 204
         }
       );
-      return { ok: true };
+
+      const refresh = await axios.get(
+        `${this.tradingBaseUrl.replace(/\/$/, "")}/rest/api/v1/accounts/${input.accountId}/positions`,
+        {
+          timeout: 30000,
+          headers
+        }
+      );
+      const body = refresh.data as unknown;
+      const bodyObj = toObj(body);
+      const positions = Array.isArray(body)
+        ? (body as GenericObject[])
+        : toArray(bodyObj?.openPositions ?? bodyObj?.positions ?? bodyObj?.items);
+      const refreshedPosition = positions.find((position) => extractPositionId(position) === positionId);
+      if (!refreshedPosition) {
+        return { ok: false, reason: "post-update position missing" };
+      }
+      const verifiedStopLoss = asNumber(refreshedPosition.stopLoss ?? refreshedPosition.sl);
+      const verifiedTakeProfit = extractTakeProfit(refreshedPosition);
+      if (!valuesMatch(input.stopLoss, verifiedStopLoss) || !valuesMatch(input.takeProfit, verifiedTakeProfit)) {
+        return {
+          ok: false,
+          reason: "post-update verification mismatch",
+          verifyDetails: {
+            positionId,
+            expectedStopLoss: input.stopLoss,
+            actualStopLoss: verifiedStopLoss,
+            expectedTakeProfit: input.takeProfit,
+            actualTakeProfit: verifiedTakeProfit
+          }
+        };
+      }
+      return {
+        ok: true,
+        verifiedStopLoss: verifiedStopLoss as number,
+        verifiedTakeProfit: verifiedTakeProfit as number
+      };
     } catch (error) {
       if (axios.isAxiosError(error)) {
         return {
@@ -682,7 +739,10 @@ export class BreakevenWebsocketAutomation {
     position: GenericObject;
     side: "BUY" | "SELL";
     breakEvenPrice: number;
-  }): Promise<{ ok: true } | { ok: false; reason: string }> {
+  }): Promise<
+    | { ok: true; verifiedStopLoss: number; verifiedTakeProfit: number }
+    | { ok: false; reason: string; verifyDetails?: GenericObject }
+  > {
     return this.modifyPositionTargets({
       accountId: input.accountId,
       position: input.position,

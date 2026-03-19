@@ -50,6 +50,9 @@ const extractPositionId = (position: Obj): string | undefined =>
 
 const extractStopLoss = (position: Obj): number | undefined => asNumber(position.stopLoss ?? position.sl);
 const extractTakeProfit = (position: Obj): number | undefined => asNumber(position.takeProfit ?? position.tp);
+const PRICE_VERIFY_TOLERANCE = 0.02;
+const valuesMatch = (expected: number, actual: number | undefined): boolean =>
+  actual !== undefined && Math.abs(actual - expected) <= PRICE_VERIFY_TOLERANCE;
 const extractOpenTimeMs = (position: Obj): number | undefined => {
   const raw = asString(position.openTime ?? position.openedAt ?? position.time);
   if (!raw) return undefined;
@@ -289,7 +292,10 @@ export class TradeRuntimeSyncService {
     side: "BUY" | "SELL";
     stopLoss: number;
     takeProfit: number;
-  }): Promise<{ ok: true } | { ok: false; reason: string }> {
+  }): Promise<
+    | { ok: true; verifiedStopLoss: number; verifiedTakeProfit: number }
+    | { ok: false; reason: string; verifyDetails?: Obj }
+  > {
     const positionId = extractPositionId(input.position);
     if (!positionId) return { ok: false, reason: "position id missing" };
     const symbol = asString(input.position.symbol);
@@ -314,8 +320,40 @@ export class TradeRuntimeSyncService {
       })
     });
 
-    if (result.ok || result.status === 204) return { ok: true };
-    return { ok: false, reason: `HTTP ${result.status}` };
+    if (!(result.ok || result.status === 204)) {
+      return { ok: false, reason: `HTTP ${result.status}` };
+    }
+
+    const refresh = await this.loadOpenPositionsByAccount([input.accountId]);
+    const refreshed = refresh.get(input.accountId);
+    if (!refreshed?.ok) {
+      return { ok: false, reason: "post-update verification fetch failed" };
+    }
+    const refreshedPosition = refreshed.positions.find((position) => extractPositionId(position) === positionId);
+    if (!refreshedPosition) {
+      return { ok: false, reason: "post-update position missing" };
+    }
+    const verifiedStopLoss = extractStopLoss(refreshedPosition);
+    const verifiedTakeProfit = extractTakeProfit(refreshedPosition);
+    if (!valuesMatch(input.stopLoss, verifiedStopLoss) || !valuesMatch(input.takeProfit, verifiedTakeProfit)) {
+      return {
+        ok: false,
+        reason: "post-update verification mismatch",
+        verifyDetails: {
+          positionId,
+          expectedStopLoss: input.stopLoss,
+          actualStopLoss: verifiedStopLoss,
+          expectedTakeProfit: input.takeProfit,
+          actualTakeProfit: verifiedTakeProfit
+        }
+      };
+    }
+
+    return {
+      ok: true,
+      verifiedStopLoss: verifiedStopLoss as number,
+      verifiedTakeProfit: verifiedTakeProfit as number
+    };
   }
 
   private async moveStopLossToBe(input: {
@@ -323,7 +361,10 @@ export class TradeRuntimeSyncService {
     position: Obj;
     side: "BUY" | "SELL";
     breakEvenPrice: number;
-  }): Promise<{ ok: true } | { ok: false; reason: string }> {
+  }): Promise<
+    | { ok: true; verifiedStopLoss: number; verifiedTakeProfit: number }
+    | { ok: false; reason: string; verifyDetails?: Obj }
+  > {
     return this.modifyPositionTargets({
       accountId: input.accountId,
       position: input.position,
@@ -504,11 +545,14 @@ export class TradeRuntimeSyncService {
             takeProfit: newTakeProfit
           });
           if (!moved.ok) {
-            failedLegs.push({ leg: legNo, reason: moved.reason });
+            const reason = moved.verifyDetails
+              ? `${moved.reason}: ${JSON.stringify(moved.verifyDetails)}`
+              : moved.reason;
+            failedLegs.push({ leg: legNo, reason });
             continue;
           }
-          leg.currentStopLoss = newStopLoss;
-          leg.takeProfit = newTakeProfit;
+          leg.currentStopLoss = moved.verifiedStopLoss;
+          leg.takeProfit = moved.verifiedTakeProfit;
           movedLegs.push({ leg: legNo, requestId, newStopLoss, newTakeProfit });
         }
 
@@ -561,12 +605,15 @@ export class TradeRuntimeSyncService {
             breakEvenPrice: profitLockStop
           });
           if (!moved.ok) {
-            failedLegs.push({ leg: legNo, reason: moved.reason });
+            const reason = moved.verifyDetails
+              ? `${moved.reason}: ${JSON.stringify(moved.verifyDetails)}`
+              : moved.reason;
+            failedLegs.push({ leg: legNo, reason });
             continue;
           }
           const positionId = extractPositionId(position);
           movedLegs.push({ leg: legNo, positionId: positionId ?? "-" });
-          leg.currentStopLoss = profitLockStop;
+          leg.currentStopLoss = moved.verifiedStopLoss;
         }
 
         // Only finalize breakeven state when at least one leg was processed.
@@ -626,11 +673,14 @@ export class TradeRuntimeSyncService {
               breakEvenPrice: targetStopLoss
             });
             if (!moved.ok) {
-              failedLegs.push({ leg: legNo, reason: moved.reason });
+              const reason = moved.verifyDetails
+                ? `${moved.reason}: ${JSON.stringify(moved.verifyDetails)}`
+                : moved.reason;
+              failedLegs.push({ leg: legNo, reason });
               continue;
             }
-            openLeg.currentStopLoss = targetStopLoss;
-            movedLegs.push({ leg: legNo, requestId: legRequestId, newStopLoss: targetStopLoss });
+            openLeg.currentStopLoss = moved.verifiedStopLoss;
+            movedLegs.push({ leg: legNo, requestId: legRequestId, newStopLoss: moved.verifiedStopLoss });
           }
 
           finalLegTrail = {
