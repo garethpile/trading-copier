@@ -37,13 +37,28 @@ const modeAccount = (config: TargetAccountsConfig, mode: ExecutionMode): string 
   return config.accounts[0] ?? "";
 };
 
+const getTimings = (providerResponse: unknown): Record<string, number> => {
+  if (!providerResponse || typeof providerResponse !== "object") return {};
+  const timings = (providerResponse as { timings?: unknown }).timings;
+  if (!timings || typeof timings !== "object") return {};
+  const out: Record<string, number> = {};
+  for (const [key, value] of Object.entries(timings as Record<string, unknown>)) {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      out[key] = Math.round(value);
+    }
+  }
+  return out;
+};
+
 const formatExecutionLegs = (providerResponse: unknown): string[] => {
   if (!providerResponse || typeof providerResponse !== "object") return [];
   const legs = (providerResponse as { legs?: unknown }).legs;
   if (!Array.isArray(legs)) return [];
   return legs.map((raw) => {
-    const leg = raw as { leg?: number; status?: string; message?: string; executionId?: string };
-    return `TP${leg.leg ?? "?"}: ${leg.status ?? "UNKNOWN"}${leg.executionId ? ` (${leg.executionId})` : ""} - ${leg.message ?? "-"}`;
+    const leg = raw as { leg?: number; status?: string; message?: string; executionId?: string; providerResponse?: unknown };
+    const providerTimings = getTimings(leg.providerResponse);
+    const timingSuffix = providerTimings.totalMs !== undefined ? ` [mc=${providerTimings.totalMs}ms]` : "";
+    return `TP${leg.leg ?? "?"}: ${leg.status ?? "UNKNOWN"}${leg.executionId ? ` (${leg.executionId})` : ""} - ${leg.message ?? "-"}${timingSuffix}`;
   });
 };
 
@@ -126,6 +141,8 @@ const executeParsedTrade = async (input: {
   const startedAt = Date.now();
   const mode = input.targetConfig.executionMode ?? "DEMO";
   const targetAccount = modeAccount(input.targetConfig, mode);
+  const modeResolvedMs = Date.now() - startedAt;
+
   if (!targetAccount) {
     await sendTelegramMessage(input.botToken, input.chatId, "Execution failed: no target account configured for current mode.");
     return;
@@ -137,6 +154,7 @@ const executeParsedTrade = async (input: {
     symbolConfig?.accountDestinationSymbols?.[targetAccount] || symbolConfig?.destinationBrokerSymbol || symbol;
   const lotSize = input.lotOverride ?? symbolConfig?.lotSize ?? input.lotConfig.defaultLotSize;
 
+  const requestBuildStartedAt = Date.now();
   const request: ExecuteTradeResolvedRequest = {
     rawMessage: input.rawMessage,
     trade: input.parsedTrade,
@@ -147,19 +165,29 @@ const executeParsedTrade = async (input: {
     sourceMessageId: input.updateId !== undefined ? String(input.updateId) : undefined,
     receivedAt: new Date().toISOString()
   };
+  const requestBuildMs = Date.now() - requestBuildStartedAt;
 
+  const validationStartedAt = Date.now();
   const validationErrors = validateResolvedExecutionRequest(request, input.targetConfig.accounts, lotRange(), {
     requireProtectiveLevels: true
   });
+  const validationMs = Date.now() - validationStartedAt;
+
   if (validationErrors.length > 0) {
     await sendTelegramMessage(input.botToken, input.chatId, `Validation failed:\n${validationErrors.join("\n")}`);
     return;
   }
 
   const executionService = new ExecutionService(input.repository);
+  const executeStartedAt = Date.now();
   const result = await executionService.executeResolved(input.executionUserId, request, input.parseWarnings);
+  const executeMs = Date.now() - executeStartedAt;
+  const providerResponse = (result as { providerResponse?: unknown }).providerResponse;
+  const timingBreakdown = getTimings(providerResponse);
+  const legLines = formatExecutionLegs(providerResponse);
+
   const totalMs = Date.now() - startedAt;
-  const legLines = formatExecutionLegs((result as { providerResponse?: unknown }).providerResponse);
+  const replyStartedAt = Date.now();
   await sendTelegramMessage(
     input.botToken,
     input.chatId,
@@ -172,12 +200,33 @@ const executeParsedTrade = async (input: {
       `Account: ${targetAccount}`,
       `Lot: ${lotSize}`,
       `Elapsed: ${totalMs}ms`,
+      `Stage timings: mode=${modeResolvedMs}ms build=${requestBuildMs}ms validate=${validationMs}ms exec=${executeMs}ms`,
+      `Exec internals: dedupe=${timingBreakdown.dedupeMs ?? 0}ms persist=${timingBreakdown.createTradeMs ?? 0}ms legs=${timingBreakdown.executeLegsMs ?? 0}ms finalize=${timingBreakdown.updateTradeMs ?? 0}ms`,
+      ...(timingBreakdown.totalMs !== undefined ? [`Exec total: ${timingBreakdown.totalMs}ms`] : []),
       ...(legLines.length > 0 ? ["Legs:", ...legLines] : [])
     ].join("\n")
   );
+  const replyMs = Date.now() - replyStartedAt;
+
+  console.log("telegramWebhook execution timing", {
+    chatId: input.chatId,
+    updateId: input.updateId,
+    symbol,
+    mode,
+    targetAccount,
+    lotSize,
+    totalMs: Date.now() - startedAt,
+    modeResolvedMs,
+    requestBuildMs,
+    validationMs,
+    executeMs,
+    replyMs,
+    timingBreakdown
+  });
 };
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
+  const startedAt = Date.now();
   const tableName = process.env.TRADE_SIGNALS_TABLE;
   const botToken = process.env.TELEGRAM_BOT_TOKEN?.trim();
   const webhookSecret = process.env.TELEGRAM_WEBHOOK_SECRET?.trim();
@@ -214,17 +263,26 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   if (updateId !== undefined) {
     const accepted = await repository.claimTelegramUpdate(chatId, updateId);
     if (!accepted) {
-      // Duplicate/older Telegram delivery, already handled.
       return jsonResponse(200, { ok: true, duplicate: true });
     }
   }
 
   const configUserId = resolveConfigUserId(chatId);
-  // Use the config owner user id for execution records so Telegram and Web share one trade ledger/history.
   const executionUserId = configUserId;
+
+  const configLoadStartedAt = Date.now();
   const lotConfig = await repository.getLotSizeConfig(configUserId);
   const targetConfig = await repository.getTargetAccountsConfig(configUserId);
   const profile = await repository.getTelegramProfile(chatId);
+  const configLoadMs = Date.now() - configLoadStartedAt;
+
+  console.log("telegramWebhook request timing", {
+    chatId,
+    updateId,
+    configUserId,
+    configLoadMs,
+    elapsedSoFarMs: Date.now() - startedAt
+  });
 
   if (text === "/start") {
     await sendTelegramMessage(

@@ -219,12 +219,17 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
     note?: string;
     requestId?: number;
   }): Promise<TradeExecutionResult> {
+    const startedAt = Date.now();
+    const secretStartAt = Date.now();
     const secret = await this.getSecret();
+    const secretMs = Date.now() - secretStartAt;
 
     const requestId = input.requestId ?? Math.floor(Date.now() % 1000);
     const comment = input.note?.slice(0, 20);
     const endpoint = `${this.tradingBaseUrl.replace(/\/$/, "")}/rest/api/v1/accounts/${input.targetAccount}/positions`;
     const symbol = (input.destinationBrokerSymbol ?? input.symbol).trim().toUpperCase();
+
+    let requestMs: number | undefined;
 
     try {
       let response: Response;
@@ -237,6 +242,7 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
             : input.side === "BUY"
               ? "Buy"
               : "Sell";
+        const requestStartAt = Date.now();
         response = await this.fetchWithTimeout(endpoint, {
           method: "POST",
           headers: this.buildHeaders(secret.apiKey),
@@ -251,6 +257,7 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
             ...(comment ? { comment } : {})
           })
         });
+        requestMs = Date.now() - requestStartAt;
       } catch (error) {
         if (this.isAbortError(error)) {
           const recovered = await this.findOpenPositionByRequestIdWithRetry({
@@ -270,7 +277,12 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
                 symbolUsed: symbol,
                 endpoint: `${this.tradingBaseUrl}/rest/api/v1/accounts/{accountId}/positions`,
                 executionMode: "MARKET",
-                recoveredAfterTimeout: true
+                recoveredAfterTimeout: true,
+                timings: {
+                  secretMs,
+                  requestMs,
+                  totalMs: Date.now() - startedAt
+                }
               },
               message: "Trade likely executed (recovered after timeout)"
             };
@@ -292,7 +304,12 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
               symbolAttempted: symbol,
               requestId,
               url: endpoint,
-              method: "POST"
+              method: "POST",
+              timings: {
+                secretMs,
+                requestMs,
+                totalMs: Date.now() - startedAt
+              }
             }
           };
         }
@@ -308,7 +325,12 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
             requestId,
             symbolUsed: symbol,
             endpoint: `${this.tradingBaseUrl}/rest/api/v1/accounts/{accountId}/positions`,
-            executionMode: "MARKET"
+            executionMode: "MARKET",
+            timings: {
+              secretMs,
+              requestMs,
+              totalMs: Date.now() - startedAt
+            }
           },
           message: "Trade submitted successfully at market price"
         };
@@ -340,7 +362,12 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
           symbolAttempted: symbol,
           requestId,
           url: endpoint,
-          method: "POST"
+          method: "POST",
+          timings: {
+            secretMs,
+            requestMs,
+            totalMs: Date.now() - startedAt
+          }
         }
       };
     } catch (error) {
@@ -348,7 +375,14 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
       return {
         status: "FAILED",
         message: "MetaCopier call failed",
-        providerResponse: String(error)
+        providerResponse: {
+          error: String(error),
+          timings: {
+            secretMs,
+            requestMs,
+            totalMs: Date.now() - startedAt
+          }
+        }
       };
     }
   }

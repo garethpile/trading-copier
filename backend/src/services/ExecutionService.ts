@@ -50,6 +50,7 @@ export class ExecutionService {
     req: ExecuteTradeResolvedRequest,
     parseWarnings: string[]
   ) {
+    const serviceStartedAt = Date.now();
     const createdAt = new Date().toISOString();
     const signalId = makeSignalId(createdAt);
     const dedupeKey = req.dedupeKey ?? makeDedupeKey({
@@ -63,7 +64,9 @@ export class ExecutionService {
       lotSize: req.lotSize
     });
 
+    const dedupeStartedAt = Date.now();
     await this.repository.createDedupeLock(userId, dedupeKey, signalId, createdAt);
+    const dedupeMs = Date.now() - dedupeStartedAt;
 
     const record: TradeRecord = {
       pk: `USER#${userId}`,
@@ -91,10 +94,15 @@ export class ExecutionService {
       createdAt
     };
 
+    const createTradeStartedAt = Date.now();
     await this.repository.createTrade(record);
+    const createTradeMs = Date.now() - createTradeStartedAt;
 
     const destinationBrokerSymbol = req.destinationBrokerSymbol.trim().toUpperCase();
+    const executeLegsStartedAt = Date.now();
     const legResults = await this.executeLegs(req, destinationBrokerSymbol);
+    const executeLegsMs = Date.now() - executeLegsStartedAt;
+
     const failedLegs = legResults.filter((leg) => leg.status === "FAILED");
     const successfulLegs = legResults.filter((leg) => leg.status === "EXECUTED");
     const combinedExecutionId = successfulLegs
@@ -102,10 +110,16 @@ export class ExecutionService {
       .filter((value): value is string => Boolean(value))
       .join(",");
 
-    const providerResponse = {
+    const providerResponse: Record<string, unknown> = {
       mode: "MULTI_TP_LEGS",
       destinationBrokerSymbol,
       legs: legResults,
+      timings: {
+        dedupeMs,
+        createTradeMs,
+        executeLegsMs,
+        serviceMs: Date.now() - serviceStartedAt
+      },
       ...(req.mode ? { executionMode: req.mode } : {}),
       ...(req.sourceMessageId ? { sourceMessageId: req.sourceMessageId } : {}),
       ...(req.receivedAt ? { receivedAt: req.receivedAt } : {}),
@@ -114,6 +128,7 @@ export class ExecutionService {
 
     if (failedLegs.length === 0) {
       const executedAt = new Date().toISOString();
+      const updateTradeStartedAt = Date.now();
       await this.repository.updateTradeResult({
         userId,
         signalId,
@@ -123,6 +138,13 @@ export class ExecutionService {
         executionId: combinedExecutionId || undefined,
         executedAt
       });
+      const updateTradeMs = Date.now() - updateTradeStartedAt;
+
+      providerResponse.timings = {
+        ...(providerResponse.timings as Record<string, number>),
+        updateTradeMs,
+        totalMs: Date.now() - serviceStartedAt
+      };
 
       return {
         status: "EXECUTED" as const,
@@ -135,6 +157,7 @@ export class ExecutionService {
     }
 
     const legFailureSummary = failedLegs.map((leg) => `TP${leg.leg}: ${leg.message}`).join(" | ");
+    const updateTradeStartedAt = Date.now();
     await this.repository.updateTradeResult({
       userId,
       signalId,
@@ -143,6 +166,13 @@ export class ExecutionService {
       providerResponse,
       errorMessage: `Executed ${successfulLegs.length}/${legResults.length} TP legs${legFailureSummary ? ` - ${legFailureSummary}` : ""}`
     });
+    const updateTradeMs = Date.now() - updateTradeStartedAt;
+
+    providerResponse.timings = {
+      ...(providerResponse.timings as Record<string, number>),
+      updateTradeMs,
+      totalMs: Date.now() - serviceStartedAt
+    };
 
     return {
       status: "FAILED" as const,
