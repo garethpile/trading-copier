@@ -30,6 +30,14 @@ export interface ExecuteTradeRequest {
   note?: string;
 }
 
+export interface ExecuteTradeResolvedRequest extends ExecuteTradeRequest {
+  destinationBrokerSymbol: string;
+  mode?: ExecutionMode;
+  dedupeKey?: string;
+  sourceMessageId?: string;
+  receivedAt?: string;
+}
+
 export type TradeStatus = "PARSED" | "EXECUTING" | "EXECUTED" | "FAILED" | "REJECTED";
 
 export interface TradeRecord {

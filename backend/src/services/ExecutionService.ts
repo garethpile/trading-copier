@@ -1,7 +1,17 @@
 import { buildExecutionProvider } from "../providers/ExecutionProviderFactory";
 import { TradeRepository, DuplicateTradeError } from "../repositories/TradeRepository";
-import { ExecuteTradeRequest, TradeRecord } from "../models/types";
+import { ExecuteTradeRequest, ExecuteTradeResolvedRequest, TradeRecord } from "../models/types";
 import { makeDedupeKey, makeSignalId } from "../utils/ids";
+
+type LegResult = {
+  leg: number;
+  takeProfit: number;
+  status: "EXECUTED" | "FAILED";
+  requestId: number;
+  executionId?: string;
+  message: string;
+  providerResponse?: unknown;
+};
 
 export class ExecutionService {
   constructor(private readonly repository: TradeRepository) {}
@@ -12,9 +22,37 @@ export class ExecutionService {
     parseWarnings: string[],
     options?: { configOwnerUserId?: string }
   ) {
+    const configOwnerUserId = options?.configOwnerUserId ?? userId;
+    const symbolConfig = await this.repository.getLotSizeConfig(configOwnerUserId);
+    const normalizedSymbol = req.trade.symbol.toUpperCase();
+    const configuredSymbol = symbolConfig.symbols[normalizedSymbol];
+    const destinationBrokerSymbol =
+      configuredSymbol?.accountDestinationSymbols?.[req.targetAccount] ||
+      configuredSymbol?.destinationBrokerSymbol ||
+      normalizedSymbol;
+
+    return this.executeCore(userId, {
+      ...req,
+      destinationBrokerSymbol
+    }, parseWarnings);
+  }
+
+  async executeResolved(
+    userId: string,
+    req: ExecuteTradeResolvedRequest,
+    parseWarnings: string[]
+  ) {
+    return this.executeCore(userId, req, parseWarnings);
+  }
+
+  private async executeCore(
+    userId: string,
+    req: ExecuteTradeResolvedRequest,
+    parseWarnings: string[]
+  ) {
     const createdAt = new Date().toISOString();
     const signalId = makeSignalId(createdAt);
-    const dedupeKey = makeDedupeKey({
+    const dedupeKey = req.dedupeKey ?? makeDedupeKey({
       symbol: req.trade.symbol,
       side: req.trade.side,
       orderType: req.trade.orderType,
@@ -55,29 +93,73 @@ export class ExecutionService {
 
     await this.repository.createTrade(record);
 
+    const destinationBrokerSymbol = req.destinationBrokerSymbol.trim().toUpperCase();
+    const legResults = await this.executeLegs(req, destinationBrokerSymbol);
+    const failedLegs = legResults.filter((leg) => leg.status === "FAILED");
+    const successfulLegs = legResults.filter((leg) => leg.status === "EXECUTED");
+    const combinedExecutionId = successfulLegs
+      .map((leg) => leg.executionId)
+      .filter((value): value is string => Boolean(value))
+      .join(",");
+
+    const providerResponse = {
+      mode: "MULTI_TP_LEGS",
+      destinationBrokerSymbol,
+      legs: legResults,
+      ...(req.mode ? { executionMode: req.mode } : {}),
+      ...(req.sourceMessageId ? { sourceMessageId: req.sourceMessageId } : {}),
+      ...(req.receivedAt ? { receivedAt: req.receivedAt } : {}),
+      ...(req.dedupeKey ? { clientDedupeKey: req.dedupeKey } : {})
+    };
+
+    if (failedLegs.length === 0) {
+      const executedAt = new Date().toISOString();
+      await this.repository.updateTradeResult({
+        userId,
+        signalId,
+        createdAt,
+        status: "EXECUTED",
+        providerResponse,
+        executionId: combinedExecutionId || undefined,
+        executedAt
+      });
+
+      return {
+        status: "EXECUTED" as const,
+        signalId,
+        executionId: combinedExecutionId || undefined,
+        provider: "MetaCopier",
+        message: `Executed ${successfulLegs.length}/${legResults.length} TP legs`,
+        providerResponse
+      };
+    }
+
+    const legFailureSummary = failedLegs.map((leg) => `TP${leg.leg}: ${leg.message}`).join(" | ");
+    await this.repository.updateTradeResult({
+      userId,
+      signalId,
+      createdAt,
+      status: "FAILED",
+      providerResponse,
+      errorMessage: `Executed ${successfulLegs.length}/${legResults.length} TP legs${legFailureSummary ? ` - ${legFailureSummary}` : ""}`
+    });
+
+    return {
+      status: "FAILED" as const,
+      signalId,
+      provider: "MetaCopier",
+      message: `Executed ${successfulLegs.length}/${legResults.length} TP legs${legFailureSummary ? ` - ${legFailureSummary}` : ""}`,
+      providerResponse,
+      errors: failedLegs.map((leg) => `TP${leg.leg}: ${leg.message}`)
+    };
+  }
+
+  private async executeLegs(req: ExecuteTradeResolvedRequest, destinationBrokerSymbol: string): Promise<LegResult[]> {
     const provider = buildExecutionProvider();
-    const configOwnerUserId = options?.configOwnerUserId ?? userId;
-    const symbolConfig = await this.repository.getLotSizeConfig(configOwnerUserId);
     const normalizedSymbol = req.trade.symbol.toUpperCase();
-    const configuredSymbol = symbolConfig.symbols[normalizedSymbol];
-    const destinationBrokerSymbol =
-      configuredSymbol?.accountDestinationSymbols?.[req.targetAccount] ||
-      configuredSymbol?.destinationBrokerSymbol ||
-      normalizedSymbol;
     const tpLevels = req.trade.takeProfits.filter((tp) => Number.isFinite(tp) && tp > 0);
-    // MetaCopier enforces requestId <= 999.
-    // Reserve a small sequential range so each TP leg has a unique requestId within one request.
     const maxBase = Math.max(0, 999 - Math.max(0, tpLevels.length - 1));
     const requestIdBase = Math.floor(Math.random() * (maxBase + 1));
-    const legResults: Array<{
-      leg: number;
-      takeProfit: number;
-      status: "EXECUTED" | "FAILED";
-      requestId: number;
-      executionId?: string;
-      message: string;
-      providerResponse?: unknown;
-    }> = [];
 
     const legPromises = tpLevels.map(async (tp, index) => {
       const legNote = req.note ? `TP${index + 1} ${req.note}` : `TP${index + 1}`;
@@ -96,15 +178,7 @@ export class ExecutionService {
         requestId
       });
 
-      const legRecord: {
-        leg: number;
-        takeProfit: number;
-        status: "EXECUTED" | "FAILED";
-        requestId: number;
-        message: string;
-        executionId?: string;
-        providerResponse?: unknown;
-      } = {
+      const legRecord: LegResult = {
         leg: index + 1,
         takeProfit: tp,
         status: result.status,
@@ -122,73 +196,7 @@ export class ExecutionService {
       return legRecord;
     });
 
-    const resolvedLegs = await Promise.all(legPromises);
-    legResults.push(...resolvedLegs.sort((a, b) => a.leg - b.leg));
-
-    const failedLegs = legResults.filter((leg) => leg.status === "FAILED");
-    const successfulLegs = legResults.filter((leg) => leg.status === "EXECUTED");
-    const combinedExecutionId = successfulLegs
-      .map((leg) => leg.executionId)
-      .filter((value): value is string => Boolean(value))
-      .join(",");
-
-    if (failedLegs.length === 0) {
-      const executedAt = new Date().toISOString();
-      await this.repository.updateTradeResult({
-        userId,
-        signalId,
-        createdAt,
-        status: "EXECUTED",
-        providerResponse: {
-          mode: "MULTI_TP_LEGS",
-          destinationBrokerSymbol,
-          legs: legResults
-        },
-        executionId: combinedExecutionId || undefined,
-        executedAt
-      });
-
-      return {
-        status: "EXECUTED" as const,
-        signalId,
-        executionId: combinedExecutionId || undefined,
-        provider: "MetaCopier",
-        message: `Executed ${successfulLegs.length}/${tpLevels.length} TP legs`,
-        providerResponse: {
-          mode: "MULTI_TP_LEGS",
-          destinationBrokerSymbol,
-          legs: legResults
-        }
-      };
-    }
-
-    await this.repository.updateTradeResult({
-      userId,
-      signalId,
-      createdAt,
-      status: "FAILED",
-      providerResponse: {
-        mode: "MULTI_TP_LEGS",
-        destinationBrokerSymbol,
-        legs: legResults
-      },
-      errorMessage: `Executed ${successfulLegs.length}/${tpLevels.length} TP legs${failedLegs.length > 0 ? ` - ${failedLegs.map((leg) => `TP${leg.leg}: ${leg.message}`).join(" | ")}` : ""}`
-    });
-
-    const legFailureSummary = failedLegs.map((leg) => `TP${leg.leg}: ${leg.message}`).join(" | ");
-
-    return {
-      status: "FAILED" as const,
-      signalId,
-      provider: "MetaCopier",
-      message: `Executed ${successfulLegs.length}/${tpLevels.length} TP legs${legFailureSummary ? ` - ${legFailureSummary}` : ""}`,
-      providerResponse: {
-        mode: "MULTI_TP_LEGS",
-        destinationBrokerSymbol,
-        legs: legResults
-      },
-      errors: failedLegs.map((leg) => `TP${leg.leg}: ${leg.message}`)
-    };
+    return (await Promise.all(legPromises)).sort((a, b) => a.leg - b.leg);
   }
 }
 

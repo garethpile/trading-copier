@@ -14,6 +14,7 @@ Secure single-user trade intake and approval web app.
 - Paste raw signal and parse preview (`POST /parse-signal`)
 - Deterministic regex parser for open-trade signals
 - Approval + execute flow (`POST /execute-trade`)
+- Fast resolved execution flow for bot-driven intake (`POST /execute-trade-fast`)
 - Market execution mode (entry price treated as reference; order executes at current market price)
 - MetaCopier connectivity test (`POST /connectivity-test`)
 - Optional WebSocket break-even automation worker (TP1 close -> move TP2/TP3 SL to BE)
@@ -107,5 +108,8 @@ MetaCopier integration defaults:
 ## Important Operational Notes
 
 - Set real MetaCopier API base URL and secret before executing live trades.
+- Create the single Cognito user manually (or automate later).
+- This MVP supports open-trade signal parsing only (no modifications/closures).
+Set real MetaCopier API base URL and secret before executing live trades.
 - Create the single Cognito user manually (or automate later).
 - This MVP supports open-trade signal parsing only (no modifications/closures).

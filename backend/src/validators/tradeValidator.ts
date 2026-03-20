@@ -1,4 +1,4 @@
-import { ExecuteTradeRequest, ParsedTrade } from "../models/types";
+import { ExecuteTradeRequest, ExecuteTradeResolvedRequest, ParsedTrade } from "../models/types";
 
 export const validateParsedTrade = (trade: ParsedTrade): string[] => {
   const errors: string[] = [];
@@ -52,5 +52,18 @@ export const validateExecutionRequest = (
     }
   }
 
+  return errors;
+};
+
+export const validateResolvedExecutionRequest = (
+  req: ExecuteTradeResolvedRequest,
+  allowedAccounts: string[],
+  lotRange: { min: number; max: number },
+  options?: { requireProtectiveLevels?: boolean }
+): string[] => {
+  const errors = validateExecutionRequest(req, allowedAccounts, lotRange, options);
+  if (!req.destinationBrokerSymbol?.trim()) {
+    errors.push("destinationBrokerSymbol is required");
+  }
   return errors;
 };

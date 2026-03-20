@@ -10,6 +10,7 @@ import {
 } from "@aws-sdk/client-dynamodb";
 import { handler as parseSignalHandler } from "../handlers/parseSignal";
 import { handler as executeTradeHandler } from "../handlers/executeTrade";
+import { handler as executeTradeFastHandler } from "../handlers/executeTradeFast";
 import { handler as getTradeHistoryHandler } from "../handlers/getTradeHistory";
 import { handler as getTradeByIdHandler } from "../handlers/getTradeById";
 import { handler as testConnectivityHandler } from "../handlers/testConnectivity";
@@ -157,6 +158,7 @@ const invoke = (handler: Handler, pathParamExtractor?: (req: express.Request) =>
 
 app.post("/parse-signal", invoke(parseSignalHandler as Handler));
 app.post("/execute-trade", invoke(executeTradeHandler as Handler));
+app.post("/execute-trade-fast", invoke(executeTradeFastHandler as Handler));
 app.post("/connectivity-test", invoke(testConnectivityHandler as Handler));
 app.get("/admin/socket-feature-status", invoke(getSocketFeatureStatusHandler as Handler));
 app.post("/admin/enable-socket-feature", invoke(enableSocketFeatureHandler as Handler));
