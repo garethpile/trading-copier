@@ -1,9 +1,9 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ExecuteTradeRequest, ExecutionMode, LotSizeConfig, ParsedTrade, TargetAccountsConfig } from "../models/types";
+import { ExecuteTradeResolvedRequest, ExecutionMode, LotSizeConfig, ParsedTrade, TargetAccountsConfig } from "../models/types";
 import { parseSignal } from "../parsers/signalParser";
 import { TradeRepository } from "../repositories/TradeRepository";
 import { ExecutionService } from "../services/ExecutionService";
-import { validateExecutionRequest } from "../validators/tradeValidator";
+import { validateResolvedExecutionRequest } from "../validators/tradeValidator";
 import { jsonResponse } from "../utils/http";
 
 type TelegramUpdate = {
@@ -35,29 +35,6 @@ const modeAccount = (config: TargetAccountsConfig, mode: ExecutionMode): string 
   if (mapped && config.accounts.includes(mapped)) return mapped;
   if (mode === "LIVE") return config.accounts[1] ?? config.accounts[0] ?? "";
   return config.accounts[0] ?? "";
-};
-
-const formatPreview = (input: {
-  trade: ParsedTrade;
-  destinationBrokerSymbol: string;
-  lotSize: number;
-  targetAccount: string;
-  mode: ExecutionMode;
-  symbolCount: number;
-}): string => {
-  const tpText = input.trade.takeProfits.map((tp, idx) => `TP${idx + 1}: ${tp}`).join(" | ");
-  return [
-    "Trade Parsed -> Executing",
-    `Mode: ${input.mode}`,
-    `Symbol: ${input.trade.symbol} -> ${input.destinationBrokerSymbol}`,
-    `Side/Type: ${input.trade.side} ${input.trade.orderType}`,
-    `Entry: ${input.trade.entry}`,
-    `SL: ${input.trade.stopLoss}`,
-    tpText,
-    `Account: ${input.targetAccount}`,
-    `Lot: ${input.lotSize}`,
-    `Mapped symbols loaded: ${input.symbolCount}`
-  ].join("\n");
 };
 
 const formatExecutionLegs = (providerResponse: unknown): string[] => {
@@ -137,7 +114,6 @@ const executeParsedTrade = async (input: {
   repository: TradeRepository;
   botToken: string;
   chatId: string;
-  configUserId: string;
   executionUserId: string;
   rawMessage: string;
   parsedTrade: ParsedTrade;
@@ -145,7 +121,9 @@ const executeParsedTrade = async (input: {
   lotConfig: LotSizeConfig;
   targetConfig: TargetAccountsConfig;
   lotOverride?: number;
+  updateId?: number;
 }) => {
+  const startedAt = Date.now();
   const mode = input.targetConfig.executionMode ?? "DEMO";
   const targetAccount = modeAccount(input.targetConfig, mode);
   if (!targetAccount) {
@@ -159,27 +137,18 @@ const executeParsedTrade = async (input: {
     symbolConfig?.accountDestinationSymbols?.[targetAccount] || symbolConfig?.destinationBrokerSymbol || symbol;
   const lotSize = input.lotOverride ?? symbolConfig?.lotSize ?? input.lotConfig.defaultLotSize;
 
-  await sendTelegramMessage(
-    input.botToken,
-    input.chatId,
-    formatPreview({
-      trade: input.parsedTrade,
-      destinationBrokerSymbol,
-      lotSize,
-      targetAccount,
-      mode,
-      symbolCount: Object.keys(input.lotConfig.symbols).length
-    })
-  );
-
-  const request: ExecuteTradeRequest = {
+  const request: ExecuteTradeResolvedRequest = {
     rawMessage: input.rawMessage,
     trade: input.parsedTrade,
     targetAccount,
-    lotSize
+    lotSize,
+    destinationBrokerSymbol,
+    mode,
+    sourceMessageId: input.updateId !== undefined ? String(input.updateId) : undefined,
+    receivedAt: new Date().toISOString()
   };
 
-  const validationErrors = validateExecutionRequest(request, input.targetConfig.accounts, lotRange(), {
+  const validationErrors = validateResolvedExecutionRequest(request, input.targetConfig.accounts, lotRange(), {
     requireProtectiveLevels: true
   });
   if (validationErrors.length > 0) {
@@ -188,9 +157,8 @@ const executeParsedTrade = async (input: {
   }
 
   const executionService = new ExecutionService(input.repository);
-  const result = await executionService.execute(input.executionUserId, request, input.parseWarnings, {
-    configOwnerUserId: input.configUserId
-  });
+  const result = await executionService.executeResolved(input.executionUserId, request, input.parseWarnings);
+  const totalMs = Date.now() - startedAt;
   const legLines = formatExecutionLegs((result as { providerResponse?: unknown }).providerResponse);
   await sendTelegramMessage(
     input.botToken,
@@ -199,6 +167,11 @@ const executeParsedTrade = async (input: {
       `Execution: ${result.status}`,
       `Signal ID: ${result.signalId ?? "-"}`,
       `Message: ${result.message}`,
+      `Mode: ${mode}`,
+      `Symbol: ${symbol} -> ${destinationBrokerSymbol}`,
+      `Account: ${targetAccount}`,
+      `Lot: ${lotSize}`,
+      `Elapsed: ${totalMs}ms`,
       ...(legLines.length > 0 ? ["Legs:", ...legLines] : [])
     ].join("\n")
   );
@@ -338,14 +311,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     repository,
     botToken,
     chatId,
-    configUserId,
     executionUserId,
     rawMessage: text,
     parsedTrade: parsed.trade,
     parseWarnings: parsed.warnings,
     lotConfig,
     targetConfig,
-    lotOverride: profile?.lotOverride
+    lotOverride: profile?.lotOverride,
+    updateId
   });
 
   return jsonResponse(200, { ok: true });
