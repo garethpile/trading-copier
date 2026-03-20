@@ -44,7 +44,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     if (error instanceof DuplicateTradeError) {
       return jsonResponse(409, {
         status: "REJECTED",
-        message: "Duplicate or in-flight trade request blocked"
+        message: "Duplicate or in-flight trade request blocked",
+        signalId: error.existingSignalId
       });
     }
 

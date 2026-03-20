@@ -74,6 +74,7 @@ export interface TradeExecutionResult {
   status: "EXECUTED" | "FAILED";
   executionId?: string;
   requestId?: number;
+  signalId?: string;
   providerResponse?: unknown;
   message: string;
 }

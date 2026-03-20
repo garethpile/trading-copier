@@ -2,7 +2,7 @@ import { APIGatewayProxyHandlerV2 } from "aws-lambda";
 import { ExecuteTradeResolvedRequest, ExecutionMode, LotSizeConfig, ParsedTrade, TargetAccountsConfig } from "../models/types";
 import { parseSignal } from "../parsers/signalParser";
 import { TradeRepository } from "../repositories/TradeRepository";
-import { ExecutionService } from "../services/ExecutionService";
+import { ExecutionService, DuplicateTradeError } from "../services/ExecutionService";
 import { validateResolvedExecutionRequest } from "../validators/tradeValidator";
 import { jsonResponse } from "../utils/http";
 
@@ -178,51 +178,87 @@ const executeParsedTrade = async (input: {
     return;
   }
 
-  const executionService = new ExecutionService(input.repository);
-  const executeStartedAt = Date.now();
-  const result = await executionService.executeResolved(input.executionUserId, request, input.parseWarnings);
-  const executeMs = Date.now() - executeStartedAt;
-  const providerResponse = (result as { providerResponse?: unknown }).providerResponse;
-  const timingBreakdown = getTimings(providerResponse);
-  const legLines = formatExecutionLegs(providerResponse);
-
-  const totalMs = Date.now() - startedAt;
-  const replyStartedAt = Date.now();
+  const ackStartedAt = Date.now();
   await sendTelegramMessage(
     input.botToken,
     input.chatId,
     [
-      `Execution: ${result.status}`,
-      `Signal ID: ${result.signalId ?? "-"}`,
-      `Message: ${result.message}`,
+      "Submitting trade...",
       `Mode: ${mode}`,
       `Symbol: ${symbol} -> ${destinationBrokerSymbol}`,
       `Account: ${targetAccount}`,
-      `Lot: ${lotSize}`,
-      `Elapsed: ${totalMs}ms`,
-      `Stage timings: mode=${modeResolvedMs}ms build=${requestBuildMs}ms validate=${validationMs}ms exec=${executeMs}ms`,
-      `Exec internals: dedupe=${timingBreakdown.dedupeMs ?? 0}ms persist=${timingBreakdown.createTradeMs ?? 0}ms legs=${timingBreakdown.executeLegsMs ?? 0}ms finalize=${timingBreakdown.updateTradeMs ?? 0}ms`,
-      ...(timingBreakdown.totalMs !== undefined ? [`Exec total: ${timingBreakdown.totalMs}ms`] : []),
-      ...(legLines.length > 0 ? ["Legs:", ...legLines] : [])
+      `Lot: ${lotSize}`
     ].join("\n")
   );
-  const replyMs = Date.now() - replyStartedAt;
+  const ackMs = Date.now() - ackStartedAt;
 
-  console.log("telegramWebhook execution timing", {
-    chatId: input.chatId,
-    updateId: input.updateId,
-    symbol,
-    mode,
-    targetAccount,
-    lotSize,
-    totalMs: Date.now() - startedAt,
-    modeResolvedMs,
-    requestBuildMs,
-    validationMs,
-    executeMs,
-    replyMs,
-    timingBreakdown
-  });
+  const executionService = new ExecutionService(input.repository);
+  const executeStartedAt = Date.now();
+
+  try {
+    const result = await executionService.executeResolved(input.executionUserId, request, input.parseWarnings);
+    const executeMs = Date.now() - executeStartedAt;
+    const providerResponse = (result as { providerResponse?: unknown }).providerResponse;
+    const timingBreakdown = getTimings(providerResponse);
+    const legLines = formatExecutionLegs(providerResponse);
+
+    const totalMs = Date.now() - startedAt;
+    const replyStartedAt = Date.now();
+    await sendTelegramMessage(
+      input.botToken,
+      input.chatId,
+      [
+        `Execution: ${result.status}`,
+        `Signal ID: ${result.signalId ?? "-"}`,
+        `Message: ${result.message}`,
+        `Mode: ${mode}`,
+        `Symbol: ${symbol} -> ${destinationBrokerSymbol}`,
+        `Account: ${targetAccount}`,
+        `Lot: ${lotSize}`,
+        `Elapsed: ${totalMs}ms`,
+        `Stage timings: mode=${modeResolvedMs}ms build=${requestBuildMs}ms validate=${validationMs}ms ack=${ackMs}ms exec=${executeMs}ms`,
+        `Exec internals: dedupe=${timingBreakdown.dedupeMs ?? 0}ms persist=${timingBreakdown.createTradeMs ?? 0}ms legs=${timingBreakdown.executeLegsMs ?? 0}ms finalize=${timingBreakdown.updateTradeMs ?? 0}ms`,
+        ...(timingBreakdown.totalMs !== undefined ? [`Exec total: ${timingBreakdown.totalMs}ms`] : []),
+        ...(legLines.length > 0 ? ["Legs:", ...legLines] : [])
+      ].join("\n")
+    );
+    const replyMs = Date.now() - replyStartedAt;
+
+    console.log("telegramWebhook execution timing", {
+      chatId: input.chatId,
+      updateId: input.updateId,
+      symbol,
+      mode,
+      targetAccount,
+      lotSize,
+      totalMs: Date.now() - startedAt,
+      modeResolvedMs,
+      requestBuildMs,
+      validationMs,
+      ackMs,
+      executeMs,
+      replyMs,
+      timingBreakdown
+    });
+  } catch (error) {
+    if (error instanceof DuplicateTradeError) {
+      await sendTelegramMessage(
+        input.botToken,
+        input.chatId,
+        [
+          "Duplicate or in-flight trade blocked.",
+          `Mode: ${mode}`,
+          `Symbol: ${symbol} -> ${destinationBrokerSymbol}`,
+          `Account: ${targetAccount}`,
+          `Lot: ${lotSize}`,
+          ...(error.existingSignalId ? [`Existing Signal ID: ${error.existingSignalId}`] : []),
+          "If this was intentional, change the signal inputs or wait for the existing request to clear."
+        ].join("\n")
+      );
+      return;
+    }
+    throw error;
+  }
 };
 
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {

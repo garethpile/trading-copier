@@ -68,7 +68,12 @@ const toSymbolConfig = (symbol: string, value: unknown): SymbolConfig | undefine
   };
 };
 
-export class DuplicateTradeError extends Error {}
+export class DuplicateTradeError extends Error {
+  constructor(message = "Duplicate trade detected", public readonly existingSignalId?: string) {
+    super(message);
+    this.name = "DuplicateTradeError";
+  }
+}
 
 export class TradeRepository {
   private readonly doc: DynamoDBDocumentClient;
@@ -116,7 +121,14 @@ export class TradeRepository {
       );
     } catch (error) {
       if (error instanceof ConditionalCheckFailedException) {
-        throw new DuplicateTradeError("Duplicate trade detected");
+        const existing = await this.doc.send(
+          new GetCommand({
+            TableName: this.tableName,
+            Key: { pk, sk }
+          })
+        );
+        const existingSignalId = typeof existing.Item?.signalId === "string" ? existing.Item.signalId : undefined;
+        throw new DuplicateTradeError("Duplicate trade detected", existingSignalId);
       }
       throw error;
     }
@@ -365,6 +377,19 @@ export class TradeRepository {
     );
   }
 
+  async getTelegramDraft(chatId: string): Promise<TelegramDraft | undefined> {
+    const pk = `TELEGRAM#${chatId}`;
+    const sk = "DRAFT#LATEST";
+    const out = await this.doc.send(
+      new GetCommand({
+        TableName: this.tableName,
+        Key: { pk, sk }
+      })
+    );
+    const item = out.Item as TelegramDraft | undefined;
+    return item;
+  }
+
   async putTelegramDraft(draft: TelegramDraft): Promise<void> {
     const pk = `TELEGRAM#${draft.chatId}`;
     const sk = "DRAFT#LATEST";
@@ -381,42 +406,39 @@ export class TradeRepository {
     );
   }
 
-  async getTelegramDraft(chatId: string): Promise<TelegramDraft | undefined> {
+  async deleteTelegramDraft(chatId: string): Promise<void> {
     const pk = `TELEGRAM#${chatId}`;
     const sk = "DRAFT#LATEST";
+    await this.doc.send(
+      new DeleteCommand({
+        TableName: this.tableName,
+        Key: { pk, sk }
+      })
+    );
+  }
+
+  async getTelegramProfile(chatId: string): Promise<TelegramProfile | undefined> {
+    const pk = `TELEGRAM#${chatId}`;
+    const sk = "SETTINGS#PROFILE";
     const out = await this.doc.send(
       new GetCommand({
         TableName: this.tableName,
         Key: { pk, sk }
       })
     );
-    return out.Item as TelegramDraft | undefined;
-  }
-
-  async deleteTelegramDraft(chatId: string): Promise<void> {
-    const pk = `TELEGRAM#${chatId}`;
-    const sk = "DRAFT#LATEST";
-    await this.doc.send(new DeleteCommand({ TableName: this.tableName, Key: { pk, sk } }));
-  }
-
-  async getTelegramProfile(chatId: string): Promise<TelegramProfile | undefined> {
-    const pk = `TELEGRAM#${chatId}`;
-    const sk = "SETTINGS#PROFILE";
-    const out = await this.doc.send(new GetCommand({ TableName: this.tableName, Key: { pk, sk } }));
-    const item = out.Item as {
-      chatId?: string;
-      lotOverride?: number;
-      lastProcessedUpdateId?: number;
-      updatedAt?: string;
-    } | undefined;
+    const item = out.Item as
+      | {
+          chatId?: string;
+          lotOverride?: number | null;
+          lastProcessedUpdateId?: number | null;
+          updatedAt?: string;
+        }
+      | undefined;
     if (!item) return undefined;
     return {
       chatId,
-      lotOverride: typeof item.lotOverride === "number" && Number.isFinite(item.lotOverride) ? item.lotOverride : undefined,
-      lastProcessedUpdateId:
-        typeof item.lastProcessedUpdateId === "number" && Number.isFinite(item.lastProcessedUpdateId)
-          ? item.lastProcessedUpdateId
-          : undefined,
+      lotOverride: typeof item.lotOverride === "number" ? item.lotOverride : undefined,
+      lastProcessedUpdateId: typeof item.lastProcessedUpdateId === "number" ? item.lastProcessedUpdateId : undefined,
       updatedAt: item.updatedAt ?? new Date().toISOString()
     };
   }
