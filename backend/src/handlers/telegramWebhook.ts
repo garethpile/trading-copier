@@ -5,6 +5,7 @@ import { TradeRepository } from "../repositories/TradeRepository";
 import { ExecutionService, DuplicateTradeError } from "../services/ExecutionService";
 import { validateResolvedExecutionRequest } from "../validators/tradeValidator";
 import { jsonResponse } from "../utils/http";
+import { TradeRuntimeSyncService } from "../services/TradeRuntimeSyncService";
 
 type TelegramUpdate = {
   update_id?: number;
@@ -345,6 +346,29 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
   if (text === "/admin") {
     await handleAdmin(repository, botToken, chatId, configUserId);
+    return jsonResponse(200, { ok: true });
+  }
+
+  if (text === "/sync") {
+    const runtimeSync = new TradeRuntimeSyncService(repository);
+    const trades = await repository.getHistory(executionUserId, 20);
+    const updated = await runtimeSync.sync(executionUserId, trades);
+    const openCount = updated.filter((trade: { providerResponse?: unknown }) => {
+      const providerResponse = trade.providerResponse && typeof trade.providerResponse === "object"
+        ? (trade.providerResponse as { legs?: unknown })
+        : undefined;
+      const legs = Array.isArray(providerResponse?.legs) ? providerResponse.legs : [];
+      return legs.some((leg) => leg && typeof leg === "object" && (leg as { runtimeState?: string }).runtimeState === "OPEN");
+    }).length;
+    await sendTelegramMessage(
+      botToken,
+      chatId,
+      [
+        "Runtime sync complete.",
+        `Trades scanned: ${trades.length}`,
+        `Trades still showing open legs: ${openCount}`
+      ].join("\n")
+    );
     return jsonResponse(200, { ok: true });
   }
 

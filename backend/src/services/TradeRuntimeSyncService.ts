@@ -169,6 +169,8 @@ export class TradeRuntimeSyncService {
   private readonly envUserEmail?: string;
   private readonly requestTimeoutMs: number;
   private readonly requestMatchWindowMs: number;
+  private readonly telegramBotToken?: string;
+  private readonly telegramChatIds: string[];
 
   constructor(private readonly repository: TradeRepository) {
     this.baseUrl = process.env.METACOPIER_BASE_URL ?? "https://api-london.metacopier.io";
@@ -181,6 +183,11 @@ export class TradeRuntimeSyncService {
       60_000,
       Number(process.env.REQUEST_MATCH_WINDOW_MS ?? String(15 * 60 * 1000))
     );
+    this.telegramBotToken = process.env.TELEGRAM_BOT_TOKEN?.trim() || undefined;
+    this.telegramChatIds = (process.env.TELEGRAM_ALLOWED_CHAT_IDS ?? "")
+      .split(",")
+      .map((v) => v.trim())
+      .filter(Boolean);
   }
 
   private nextRequestId(): number {
@@ -235,6 +242,24 @@ export class TradeRuntimeSyncService {
     } finally {
       clearTimeout(timeout);
     }
+  }
+
+  private async sendTelegramNotification(lines: string[]): Promise<void> {
+    if (!this.telegramBotToken || this.telegramChatIds.length === 0) return;
+    const text = lines.filter(Boolean).join("\n");
+    await Promise.all(
+      this.telegramChatIds.map(async (chatId: string) => {
+        try {
+          await fetch(`https://api.telegram.org/bot${this.telegramBotToken}/sendMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: chatId, text })
+          });
+        } catch (error) {
+          console.error("runtime sync telegram notification failed", { chatId, error: String(error) });
+        }
+      })
+    );
   }
 
   private async loadOpenPositionsByAccount(
@@ -700,6 +725,10 @@ export class TradeRuntimeSyncService {
         }
       }
 
+      const previousBreakevenStatus = asString(existingBe.status);
+      const previousSignalMagnitudeStatus = asString(existingSignalMagnitudeRebase.status);
+      const previousFinalLegTrailStatus = asString(existingFinalLegTrail.status);
+
       const nextProviderResponse: Obj = {
         ...providerResponse,
         legs: normalizedLegs,
@@ -721,6 +750,38 @@ export class TradeRuntimeSyncService {
         providerResponse: nextProviderResponse,
         errorMessage: nextErrorMessage
       });
+
+      const nextBreakevenStatus = asString(breakeven.status);
+      const nextSignalMagnitudeStatus = asString(signalMagnitudeRebase.status);
+      const nextFinalLegTrailStatus = asString(finalLegTrail.status);
+
+      if (nextSignalMagnitudeStatus && nextSignalMagnitudeStatus !== previousSignalMagnitudeStatus) {
+        await this.sendTelegramNotification([
+          `Trade update: ${trade.symbol} ${trade.side}`,
+          `Signal ID: ${trade.signalId}`,
+          `Event: signal rebase ${nextSignalMagnitudeStatus.toLowerCase()}`,
+          `Entry: ${trade.entry}`,
+          `Account: ${trade.targetAccount}`
+        ]);
+      }
+      if (nextBreakevenStatus && nextBreakevenStatus !== previousBreakevenStatus) {
+        await this.sendTelegramNotification([
+          `Trade update: ${trade.symbol} ${trade.side}`,
+          `Signal ID: ${trade.signalId}`,
+          `Event: stop loss move ${nextBreakevenStatus.toLowerCase()}`,
+          `Entry: ${trade.entry}`,
+          `Account: ${trade.targetAccount}`
+        ]);
+      }
+      if (nextFinalLegTrailStatus && nextFinalLegTrailStatus !== previousFinalLegTrailStatus) {
+        await this.sendTelegramNotification([
+          `Trade update: ${trade.symbol} ${trade.side}`,
+          `Signal ID: ${trade.signalId}`,
+          `Event: final leg trail ${nextFinalLegTrailStatus.toLowerCase()}`,
+          `Entry: ${trade.entry}`,
+          `Account: ${trade.targetAccount}`
+        ]);
+      }
 
       updated.push({
         ...trade,
