@@ -194,6 +194,22 @@ export class TradingCopierStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10)
     });
 
+    const previewTradeManagementFn = new lambda.Function(this, "PreviewTradeManagementFn", {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: "handlers/previewTradeManagement.handler",
+      code: lambdaCode,
+      environment: commonEnv,
+      timeout: cdk.Duration.seconds(20)
+    });
+
+    const applyTradeManagementFn = new lambda.Function(this, "ApplyTradeManagementFn", {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: "handlers/applyTradeManagement.handler",
+      code: lambdaCode,
+      environment: commonEnv,
+      timeout: cdk.Duration.seconds(30)
+    });
+
     const runRuntimeSyncFn = new lambda.Function(this, "RunRuntimeSyncFn", {
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: "handlers/runRuntimeSync.handler",
@@ -339,6 +355,8 @@ export class TradingCopierStack extends cdk.Stack {
     table.grantReadWriteData(executeTradeFn);
     table.grantReadWriteData(getTradeHistoryFn);
     table.grantReadWriteData(getTradeByIdFn);
+    table.grantReadWriteData(previewTradeManagementFn);
+    table.grantReadWriteData(applyTradeManagementFn);
     table.grantReadWriteData(runRuntimeSyncFn);
     table.grantReadWriteData(getLotSizeConfigFn);
     table.grantReadWriteData(updateLotSizeConfigFn);
@@ -351,6 +369,8 @@ export class TradingCopierStack extends cdk.Stack {
 
     metacopierSecret.grantRead(executeTradeFn);
     metacopierSecret.grantRead(testConnectivityFn);
+    metacopierSecret.grantRead(previewTradeManagementFn);
+    metacopierSecret.grantRead(applyTradeManagementFn);
     metacopierSecret.grantRead(getSocketFeatureStatusFn);
     metacopierSecret.grantRead(enableSocketFeatureFn);
     metacopierSecret.grantRead(getTradeHistoryFn);
@@ -473,6 +493,20 @@ export class TradingCopierStack extends cdk.Stack {
       path: "/trade/{signalId}",
       methods: [apigwv2.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration("GetTradeByIdIntegration", getTradeByIdFn),
+      authorizer: jwtAuthorizer
+    });
+
+    httpApi.addRoutes({
+      path: "/trade/{signalId}/manage/preview",
+      methods: [apigwv2.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration("PreviewTradeManagementIntegration", previewTradeManagementFn),
+      authorizer: jwtAuthorizer
+    });
+
+    httpApi.addRoutes({
+      path: "/trade/{signalId}/manage/apply",
+      methods: [apigwv2.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration("ApplyTradeManagementIntegration", applyTradeManagementFn),
       authorizer: jwtAuthorizer
     });
 

@@ -20,6 +20,8 @@ import { handler as getLotSizeConfigHandler } from "../handlers/getLotSizeConfig
 import { handler as updateLotSizeConfigHandler } from "../handlers/updateLotSizeConfig";
 import { handler as getTargetAccountsConfigHandler } from "../handlers/getTargetAccountsConfig";
 import { handler as updateTargetAccountsConfigHandler } from "../handlers/updateTargetAccountsConfig";
+import { handler as previewTradeManagementHandler } from "../handlers/previewTradeManagement";
+import { handler as applyTradeManagementHandler } from "../handlers/applyTradeManagement";
 import { handler as telegramWebhookHandler } from "../handlers/telegramWebhook";
 
 const app = express();
@@ -170,6 +172,14 @@ app.get("/trade-history", invoke(getTradeHistoryHandler as Handler));
 app.get(
   "/trade/:signalId",
   invoke(getTradeByIdHandler as Handler, (req) => ({ signalId: String(req.params.signalId ?? "") }))
+);
+app.post(
+  "/trade/:signalId/manage/preview",
+  invoke(previewTradeManagementHandler as Handler, (req) => ({ signalId: String(req.params.signalId ?? "") }))
+);
+app.post(
+  "/trade/:signalId/manage/apply",
+  invoke(applyTradeManagementHandler as Handler, (req) => ({ signalId: String(req.params.signalId ?? "") }))
 );
 app.post("/telegram/webhook", invoke(telegramWebhookHandler as Handler));
 
