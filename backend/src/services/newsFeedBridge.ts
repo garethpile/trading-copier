@@ -1,25 +1,23 @@
-import path from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+const newsFeedControlBaseUrl = (process.env.NEWS_FEED_CONTROL_URL?.trim() || "http://127.0.0.1:3301").replace(/\/+$/, "");
+const newsFeedControlToken = process.env.NEWS_FEED_CONTROL_TOKEN?.trim();
 
-const execFileAsync = promisify(execFile);
+const requestNewsFeed = async (path: "/status" | "/poll" | "/pause" | "/resume", method: "GET" | "POST") => {
+  const response = await fetch(`${newsFeedControlBaseUrl}${path}`, {
+    method,
+    headers: {
+      ...(newsFeedControlToken ? { "X-NewsFeed-Token": newsFeedControlToken } : {})
+    }
+  });
 
-const resolveNewsFeedBackendDir = (): string => {
-  const configured = process.env.TRADINGNEWSFEED_BACKEND_DIR?.trim();
-  if (configured) return configured;
-  return path.resolve(process.cwd(), "../tradingnewsfeed/backend");
-};
-
-const runNewsCommand = async (command: "status" | "poll" | "pause" | "resume") => {
-  const cwd = resolveNewsFeedBackendDir();
-  const { stdout, stderr } = await execFileAsync("npm", ["run", command], { cwd, env: process.env, timeout: 45_000 });
-  if (stderr?.trim()) {
-    console.warn("news feed command stderr", { command, stderr });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`news feed control request failed: ${response.status} ${response.statusText} ${text}`.trim());
   }
-  return stdout.trim();
+
+  return text.trim();
 };
 
-export const getNewsFeedStatus = async (): Promise<string> => runNewsCommand("status");
-export const pollNewsFeedNow = async (): Promise<string> => runNewsCommand("poll");
-export const pauseNewsFeed = async (): Promise<string> => runNewsCommand("pause");
-export const resumeNewsFeed = async (): Promise<string> => runNewsCommand("resume");
+export const getNewsFeedStatus = async (): Promise<string> => requestNewsFeed("/status", "GET");
+export const pollNewsFeedNow = async (): Promise<string> => requestNewsFeed("/poll", "POST");
+export const pauseNewsFeed = async (): Promise<string> => requestNewsFeed("/pause", "POST");
+export const resumeNewsFeed = async (): Promise<string> => requestNewsFeed("/resume", "POST");

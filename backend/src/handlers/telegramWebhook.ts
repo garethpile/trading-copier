@@ -333,7 +333,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         `DEMO account: ${modeAccount(targetConfig, "DEMO") || "-"}`,
         `LIVE account: ${modeAccount(targetConfig, "LIVE") || "-"}`,
         `Lot override: ${profile?.lotOverride ?? "none"}`,
-        "Commands: /mode demo, /mode live, /lot <size>, /lot reset, /history, /admin",
+        "Commands: /mode demo, /mode live, /lot <size>, /lot reset, /history, /admin, /news, /news poll, /news pause, /news resume",
         `Loaded symbols: ${Object.keys(lotConfig.symbols).length}`
       ].join("\n")
     );
@@ -342,6 +342,42 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
   if (text === "/history") {
     await handleHistory(repository, botToken, chatId, executionUserId);
+    return jsonResponse(200, { ok: true });
+  }
+
+  if (text === "/news" || text === "/news status") {
+    try {
+      await sendTelegramMessage(botToken, chatId, await getNewsFeedStatus());
+    } catch (error) {
+      await sendTelegramMessage(botToken, chatId, `News feed status failed: ${String(error)}`);
+    }
+    return jsonResponse(200, { ok: true });
+  }
+
+  if (text === "/news poll") {
+    try {
+      await sendTelegramMessage(botToken, chatId, await pollNewsFeedNow());
+    } catch (error) {
+      await sendTelegramMessage(botToken, chatId, `News feed poll failed: ${String(error)}`);
+    }
+    return jsonResponse(200, { ok: true });
+  }
+
+  if (text === "/news pause") {
+    try {
+      await sendTelegramMessage(botToken, chatId, await pauseNewsFeed());
+    } catch (error) {
+      await sendTelegramMessage(botToken, chatId, `News feed pause failed: ${String(error)}`);
+    }
+    return jsonResponse(200, { ok: true });
+  }
+
+  if (text === "/news resume") {
+    try {
+      await sendTelegramMessage(botToken, chatId, await resumeNewsFeed());
+    } catch (error) {
+      await sendTelegramMessage(botToken, chatId, `News feed resume failed: ${String(error)}`);
+    }
     return jsonResponse(200, { ok: true });
   }
 
