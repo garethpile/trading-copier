@@ -159,6 +159,12 @@ const extractPositionSide = (position: Obj): "BUY" | "SELL" | undefined => {
   return undefined;
 };
 
+const extractPositionOpenPrice = (position: Obj): number | undefined =>
+  asNumber(position.openPrice ?? position.price ?? position.entryPrice);
+
+const extractPositionVolume = (position: Obj): number | undefined =>
+  asNumber(position.volume ?? position.lotSize ?? position.size);
+
 export class TradeRuntimeSyncService {
   private readonly secretsClient = new SecretsManagerClient({});
   private secretCache?: MetaCopierSecret;
@@ -434,10 +440,17 @@ export class TradeRuntimeSyncService {
             : undefined
         ].filter((v): v is string => Boolean(v))
       );
-      const matchedOpenPositions = openPositions.filter((p) => {
+      const candidateOpenPositions = openPositions.filter((p) => {
         const side = extractPositionSide(p);
         const symbol = extractPositionSymbol(p);
-        if (!(side === trade.side && !!symbol && expectedSymbols.has(symbol))) return false;
+        return side === trade.side && !!symbol && expectedSymbols.has(symbol);
+      });
+      const legRequestIds = new Set(
+        legs.map((leg) => extractRequestId(toObj(leg) ?? {})).filter((v): v is number => v !== undefined)
+      );
+      let matchedOpenPositions = candidateOpenPositions.filter((p) => {
+        const requestId = extractRequestId(p);
+        if (requestId !== undefined && legRequestIds.has(requestId)) return true;
         if (!Number.isFinite(tradeCreatedMs)) return true;
         const openTime = asString(p.openTime ?? p.openedAt ?? p.time);
         if (!openTime) return true;
@@ -445,6 +458,18 @@ export class TradeRuntimeSyncService {
         if (!Number.isFinite(openMs)) return true;
         return Math.abs(openMs - tradeCreatedMs) <= this.requestMatchWindowMs;
       });
+      if (matchedOpenPositions.length === 0) {
+        matchedOpenPositions = candidateOpenPositions.filter((p) => {
+          const openPrice = extractPositionOpenPrice(p);
+          const volume = extractPositionVolume(p);
+          const volumeOk = volume === undefined || Math.abs(volume - trade.lotSize) <= 0.0001;
+          const priceOk = openPrice === undefined || Math.abs(openPrice - trade.entry) <= Math.max(5, Math.abs(trade.entry) * 0.01);
+          return volumeOk && priceOk;
+        });
+      }
+      if (matchedOpenPositions.length === 0) {
+        matchedOpenPositions = candidateOpenPositions;
+      }
       const openReqIds = new Set(
         matchedOpenPositions.map((p) => extractRequestId(p)).filter((v): v is number => v !== undefined)
       );
