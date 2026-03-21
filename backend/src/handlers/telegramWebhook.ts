@@ -6,6 +6,7 @@ import { ExecutionService, DuplicateTradeError } from "../services/ExecutionServ
 import { validateResolvedExecutionRequest } from "../validators/tradeValidator";
 import { jsonResponse } from "../utils/http";
 import { TradeRuntimeSyncService } from "../services/TradeRuntimeSyncService";
+import { getNewsFeedStatus, pauseNewsFeed, pollNewsFeedNow, resumeNewsFeed } from "../services/newsFeedBridge";
 
 type TelegramUpdate = {
   update_id?: number;
