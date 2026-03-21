@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import * as cdk from "aws-cdk-lib";
 import { TradingCopierStack } from "../lib/tradingcopier-stack";
+import { applySolutionTags } from "../lib/tags";
 
 const loadEnvFile = (filepath: string): void => {
   if (!existsSync(filepath)) return;
@@ -24,10 +25,22 @@ loadEnvFile(resolve(__dirname, "..", ".env"));
 loadEnvFile(resolve(__dirname, "..", "..", "..", "backend", ".env"));
 
 const app = new cdk.App();
+const environment = process.env.APP_ENV ?? process.env.NODE_ENV ?? "unknown";
+const costCenter = process.env.COST_CENTER;
 
-new TradingCopierStack(app, "TradingCopierStack", {
+const stack = new TradingCopierStack(app, "TradingCopierStack", {
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
     region: process.env.CDK_DEFAULT_REGION
   }
+});
+
+applySolutionTags(stack, {
+  solution: "TradingCopier",
+  component: "backend",
+  environment,
+  repo: "tradingcopier",
+  serviceGroup: "trading",
+  costCenter,
+  lifecycle: environment === "prod" ? "active" : "nonprod"
 });
