@@ -17,7 +17,7 @@ export const handler: APIGatewayProxyHandlerV2 = async () => {
     }
 
     const repository = new TradeRepository(tableName);
-    const items = await repository.getHistory(userId, 200);
+    const items = await repository.getHistory(userId, 50);
     const runtimeSync = new TradeRuntimeSyncService(repository);
     const synced = await runtimeSync.sync(userId, items);
 

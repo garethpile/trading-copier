@@ -199,7 +199,7 @@ export class TradingCopierStack extends cdk.Stack {
       handler: "handlers/runRuntimeSync.handler",
       code: lambdaCode,
       environment: commonEnv,
-      timeout: cdk.Duration.seconds(20)
+      timeout: cdk.Duration.seconds(60)
     });
 
     const testConnectivityFn = new lambda.Function(this, "TestConnectivityFn", {
