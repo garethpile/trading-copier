@@ -157,12 +157,14 @@ export class ExecutionService {
     }
 
     const legFailureSummary = failedLegs.map((leg) => `TP${leg.leg}: ${leg.message}`).join(" | ");
+    const partialSuccess = successfulLegs.length > 0;
+    const finalStatus = partialSuccess ? "PARTIAL" : "FAILED";
     const updateTradeStartedAt = Date.now();
     await this.repository.updateTradeResult({
       userId,
       signalId,
       createdAt,
-      status: "FAILED",
+      status: finalStatus,
       providerResponse,
       errorMessage: `Executed ${successfulLegs.length}/${legResults.length} TP legs${legFailureSummary ? ` - ${legFailureSummary}` : ""}`
     });
@@ -175,7 +177,7 @@ export class ExecutionService {
     };
 
     return {
-      status: "FAILED" as const,
+      status: finalStatus,
       signalId,
       provider: "MetaCopier",
       message: `Executed ${successfulLegs.length}/${legResults.length} TP legs${legFailureSummary ? ` - ${legFailureSummary}` : ""}`,
@@ -211,7 +213,7 @@ export class ExecutionService {
       const legRecord: LegResult = {
         leg: index + 1,
         takeProfit: tp,
-        status: result.status,
+        status: result.status === "EXECUTED" ? "EXECUTED" : "FAILED",
         requestId: result.requestId ?? requestId,
         message: result.message
       };

@@ -85,6 +85,7 @@ const requestPill = (item: TradeRecord): { label: string; className: string } =>
   const status = item.status.toUpperCase();
   if (status === "EXECUTING") return { label: "IN FLIGHT", className: "pill warn" };
   if (status === "EXECUTED") return { label: "LIVE", className: "pill ok live-pill" };
+  if (status === "PARTIAL") return { label: "PARTIAL", className: "pill warn" };
   if (status === "FAILED") return { label: "FAILED", className: "pill bad" };
   if (status === "REJECTED") return { label: "REJECTED", className: "pill bad" };
   return { label: status, className: "pill" };

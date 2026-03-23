@@ -27,7 +27,7 @@ export interface ExecuteTradeRequest {
 }
 
 export interface ExecuteTradeResponse {
-  status: "EXECUTED" | "FAILED" | "REJECTED";
+  status: "EXECUTED" | "PARTIAL" | "FAILED" | "REJECTED";
   signalId?: string;
   executionId?: string;
   provider?: string;

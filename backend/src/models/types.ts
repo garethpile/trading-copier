@@ -38,7 +38,7 @@ export interface ExecuteTradeResolvedRequest extends ExecuteTradeRequest {
   receivedAt?: string;
 }
 
-export type TradeStatus = "PARSED" | "EXECUTING" | "EXECUTED" | "FAILED" | "REJECTED";
+export type TradeStatus = "PARSED" | "EXECUTING" | "EXECUTED" | "PARTIAL" | "FAILED" | "REJECTED";
 
 export interface TradeRecord {
   pk: string;
@@ -71,7 +71,7 @@ export interface TradeRecord {
 }
 
 export interface TradeExecutionResult {
-  status: "EXECUTED" | "FAILED";
+  status: "EXECUTED" | "PARTIAL" | "FAILED";
   executionId?: string;
   requestId?: number;
   signalId?: string;
