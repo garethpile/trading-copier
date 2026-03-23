@@ -467,7 +467,7 @@ export class TradeRuntimeSyncService {
         } else if (originalStatus === "FAILED") {
           runtimeState = "CLOSED";
         } else if (requestId !== undefined && originalStatus === "EXECUTED") {
-          runtimeState = openReqIds.has(requestId) ? "OPEN" : "CLOSED";
+          runtimeState = openReqIds.has(requestId) ? "OPEN" : "UNKNOWN";
         }
         const previousRuntimeState = asString(legObj.runtimeState)?.toUpperCase();
         if (

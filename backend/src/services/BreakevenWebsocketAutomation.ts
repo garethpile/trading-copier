@@ -357,7 +357,7 @@ export class BreakevenWebsocketAutomation {
       } else if (requestId !== undefined) {
         if (openMatches.length > 0) {
           runtimeState = "OPEN";
-        } else if (originalStatus === "EXECUTED") {
+        } else if (originalStatus === "EXECUTED" && historyMatches.length > 0) {
           runtimeState = "CLOSED";
         }
       }
