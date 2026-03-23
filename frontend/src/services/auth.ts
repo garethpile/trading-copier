@@ -182,7 +182,16 @@ export const logout = async (): Promise<void> => {
     localStorage.removeItem(localTokenKey);
     return;
   }
-  await signOut();
+  await signOut({
+    global: true,
+    ...(cognitoDomain
+      ? {
+          oauth: {
+            redirectUrl: oauthRedirectOut || window.location.origin
+          }
+        }
+      : {})
+  });
 };
 
 export const getMfaPreference = async (): Promise<{ enabled?: string[]; preferred?: string }> => {

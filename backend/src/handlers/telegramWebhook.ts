@@ -12,6 +12,9 @@ type TelegramUpdate = {
   update_id?: number;
   message?: {
     text?: string;
+    caption?: string;
+    photo?: Array<{ file_id?: string }>;
+    document?: { file_id?: string };
     chat?: { id?: number | string };
     from?: { id?: number | string; username?: string };
   };
@@ -286,6 +289,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const update = event.body ? (JSON.parse(event.body) as TelegramUpdate) : {};
   const updateId = typeof update.update_id === "number" ? update.update_id : undefined;
   const text = normalizeText(update.message?.text);
+  const caption = normalizeText(update.message?.caption);
   const chatId = String(update.message?.chat?.id ?? "");
   const fromUserId = update.message?.from?.id !== undefined ? String(update.message.from.id) : undefined;
   if (!chatId || (!text && !caption && !update.message?.photo?.length && !update.message?.document?.file_id)) {
@@ -488,16 +492,6 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     executionUserId,
     rawMessage: text,
     parsedTrade: parsed.trade,
-    parseWarnings: parsed.warnings,
-    lotConfig,
-    targetConfig,
-    lotOverride: profile?.lotOverride,
-    updateId
-  });
-
-  return jsonResponse(200, { ok: true });
-};
-de,
     parseWarnings: parsed.warnings,
     lotConfig,
     targetConfig,

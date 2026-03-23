@@ -19,15 +19,18 @@ export default function App() {
   const [authed, setAuthed] = useState(false);
   const [view, setView] = useState<View>("intake");
   const [profileOpen, setProfileOpen] = useState(false);
+  const [signingOut, setSigningOut] = useState(false);
+  const [authError, setAuthError] = useState<string | undefined>();
 
   useEffect(() => {
     void isAuthenticated().then(setAuthed).catch(() => setAuthed(false));
   }, []);
 
   if (!authed) {
-    return (
+      return (
       <main className="container">
         <h1>Trading Copier</h1>
+        {authError ? <p className="error">{authError}</p> : null}
         <LoginForm onAuthenticated={() => setAuthed(true)} />
       </main>
     );
@@ -81,12 +84,24 @@ export default function App() {
                 <button
                   type="button"
                   className="ghost"
+                  disabled={signingOut}
                   onClick={() => {
-                    void logout();
-                    setAuthed(false);
+                    void (async () => {
+                      setSigningOut(true);
+                      setAuthError(undefined);
+                      try {
+                        await logout();
+                        setAuthed(false);
+                        setProfileOpen(false);
+                      } catch (error) {
+                        setAuthError(error instanceof Error ? error.message : String(error));
+                      } finally {
+                        setSigningOut(false);
+                      }
+                    })();
                   }}
                 >
-                  Sign Out
+                  {signingOut ? "Signing Out..." : "Sign Out"}
                 </button>
               </div>
             ) : null}

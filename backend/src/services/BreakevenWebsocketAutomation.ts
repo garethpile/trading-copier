@@ -37,9 +37,6 @@ const extractRequestId = (position: GenericObject): number | undefined => {
   const apiMatch = comment.match(/API\|(\d+)\|/);
   if (apiMatch) return Number(apiMatch[1]);
 
-  const anyNum = comment.match(/(\d{1,3})/);
-  if (anyNum) return Number(anyNum[1]);
-
   return undefined;
 };
 
@@ -298,16 +295,15 @@ export class BreakevenWebsocketAutomation {
           : undefined
       ].filter((v): v is string => Boolean(v))
     );
+    const legRequestIds = new Set(
+      legs.map((leg) => extractRequestId(leg)).filter((v): v is number => v !== undefined)
+    );
     const matchedOpenPositions = openPositions.filter((position) => {
       const side = extractPositionSide(position);
       const symbol = extractPositionSymbol(position);
       if (!(side === trade.side && !!symbol && expectedSymbols.has(symbol))) return false;
-      if (!Number.isFinite(tradeCreatedMs)) return true;
-      const openTime = asString(position.openTime ?? position.openedAt ?? position.time);
-      if (!openTime) return true;
-      const openMs = Date.parse(openTime);
-      if (!Number.isFinite(openMs)) return true;
-      return Math.abs(openMs - tradeCreatedMs) <= this.requestMatchWindowMs;
+      const requestId = extractRequestId(position);
+      return legRequestIds.size > 0 && requestId !== undefined && legRequestIds.has(requestId);
     });
     const matchedHistoryEvents = historyEvents.filter((event) => {
       const side = extractPositionSide(event);
@@ -357,9 +353,8 @@ export class BreakevenWebsocketAutomation {
       ) {
         runtimeState = previousRuntimeState;
       }
-      const adoptedFromManual = originalStatus === "FAILED" && runtimeState === "OPEN";
       const normalizedStatus =
-        adoptedFromManual || originalStatus === "EXECUTED"
+        originalStatus === "EXECUTED"
           ? "EXECUTED"
           : originalStatus === "FAILED"
             ? "FAILED"
@@ -369,7 +364,6 @@ export class BreakevenWebsocketAutomation {
         ...leg,
         ...(requestId !== undefined ? { requestId } : {}),
         status: normalizedStatus,
-        ...(adoptedFromManual ? { adoptedFromManual: true } : {}),
         runtimePayload: {
           matchedOpenPositions: openMatches.slice(0, MAX_TRADE_OPEN_POSITIONS),
           matchedHistoryEvents: historyMatches.slice(-MAX_TRADE_HISTORY_EVENTS)
@@ -391,22 +385,7 @@ export class BreakevenWebsocketAutomation {
     const signalMagnitudeRebase = (providerResponse.signalMagnitudeRebase as GenericObject | undefined) ?? {};
     let nextErrorMessage = trade.errorMessage;
     let nextSignalMagnitudeRebase = signalMagnitudeRebase;
-    const adoptedLegs = normalizedLegs.filter((leg) => leg.adoptedFromManual === true);
-    const runtimeAdoption =
-      adoptedLegs.length > 0
-        ? {
-            status: "COMPLETED",
-            adoptedAt: new Date().toISOString(),
-            adoptedLegs: adoptedLegs.map((leg) => ({
-              leg: asNumber(leg.leg) ?? -1,
-              requestId: extractRequestId(leg)
-            }))
-          }
-        : (providerResponse.runtimeAdoption as GenericObject | undefined) ?? {};
-
-    if (adoptedLegs.length > 0 && (nextErrorMessage ?? "").includes("Executed 0/")) {
-      nextErrorMessage = undefined;
-    }
+    const runtimeAdoption = (providerResponse.runtimeAdoption as GenericObject | undefined) ?? {};
 
     if (openExecutedLegs.length > 0 && asString(signalMagnitudeRebase.status) !== "COMPLETED") {
       const movedLegs: Array<{ leg: number; requestId: number; newStopLoss: number; newTakeProfit: number }> = [];

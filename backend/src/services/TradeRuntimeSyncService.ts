@@ -39,9 +39,6 @@ const extractRequestId = (position: Obj): number | undefined => {
   const apiMatch = comment.match(/API\|(\d+)\|/);
   if (apiMatch) return Number(apiMatch[1]);
 
-  const anyNum = comment.match(/(\d{1,3})/);
-  if (anyNum) return Number(anyNum[1]);
-
   return undefined;
 };
 
@@ -159,12 +156,6 @@ const extractPositionSide = (position: Obj): "BUY" | "SELL" | undefined => {
   return undefined;
 };
 
-const extractPositionOpenPrice = (position: Obj): number | undefined =>
-  asNumber(position.openPrice ?? position.price ?? position.entryPrice);
-
-const extractPositionVolume = (position: Obj): number | undefined =>
-  asNumber(position.volume ?? position.lotSize ?? position.size);
-
 export class TradeRuntimeSyncService {
   private readonly secretsClient = new SecretsManagerClient({});
   private secretCache?: MetaCopierSecret;
@@ -174,7 +165,6 @@ export class TradeRuntimeSyncService {
   private readonly envApiKey: string;
   private readonly envUserEmail?: string;
   private readonly requestTimeoutMs: number;
-  private readonly requestMatchWindowMs: number;
   private readonly telegramBotToken?: string;
   private readonly telegramChatIds: string[];
 
@@ -185,10 +175,6 @@ export class TradeRuntimeSyncService {
     this.envApiKey = process.env.METACOPIER_API_KEY?.trim() ?? "";
     this.envUserEmail = process.env.METACOPIER_USER_EMAIL?.trim() || undefined;
     this.requestTimeoutMs = Number(process.env.METACOPIER_REQUEST_TIMEOUT_MS ?? "3000");
-    this.requestMatchWindowMs = Math.max(
-      60_000,
-      Number(process.env.REQUEST_MATCH_WINDOW_MS ?? String(15 * 60 * 1000))
-    );
     this.telegramBotToken = process.env.TELEGRAM_BOT_TOKEN?.trim() || undefined;
     this.telegramChatIds = (process.env.TELEGRAM_ALLOWED_CHAT_IDS ?? "")
       .split(",")
@@ -431,7 +417,6 @@ export class TradeRuntimeSyncService {
 
       const legs = toArray(providerResponse.legs);
       const openPositions = account.positions;
-      const tradeCreatedMs = Date.parse(trade.createdAt);
       const expectedSymbols = new Set(
         [
           normalizeSymbol(trade.symbol),
@@ -448,28 +433,13 @@ export class TradeRuntimeSyncService {
       const legRequestIds = new Set(
         legs.map((leg) => extractRequestId(toObj(leg) ?? {})).filter((v): v is number => v !== undefined)
       );
-      let matchedOpenPositions = candidateOpenPositions.filter((p) => {
-        const requestId = extractRequestId(p);
-        if (requestId !== undefined && legRequestIds.has(requestId)) return true;
-        if (!Number.isFinite(tradeCreatedMs)) return true;
-        const openTime = asString(p.openTime ?? p.openedAt ?? p.time);
-        if (!openTime) return true;
-        const openMs = Date.parse(openTime);
-        if (!Number.isFinite(openMs)) return true;
-        return Math.abs(openMs - tradeCreatedMs) <= this.requestMatchWindowMs;
-      });
-      if (matchedOpenPositions.length === 0) {
-        matchedOpenPositions = candidateOpenPositions.filter((p) => {
-          const openPrice = extractPositionOpenPrice(p);
-          const volume = extractPositionVolume(p);
-          const volumeOk = volume === undefined || Math.abs(volume - trade.lotSize) <= 0.0001;
-          const priceOk = openPrice === undefined || Math.abs(openPrice - trade.entry) <= Math.max(5, Math.abs(trade.entry) * 0.01);
-          return volumeOk && priceOk;
-        });
-      }
-      if (matchedOpenPositions.length === 0) {
-        matchedOpenPositions = candidateOpenPositions;
-      }
+      const matchedOpenPositions =
+        legRequestIds.size === 0
+          ? []
+          : candidateOpenPositions.filter((p) => {
+              const requestId = extractRequestId(p);
+              return requestId !== undefined && legRequestIds.has(requestId);
+            });
       const openReqIds = new Set(
         matchedOpenPositions.map((p) => extractRequestId(p)).filter((v): v is number => v !== undefined)
       );
@@ -505,9 +475,8 @@ export class TradeRuntimeSyncService {
         ) {
           runtimeState = previousRuntimeState;
         }
-        const adoptedFromManual = originalStatus === "FAILED" && runtimeState === "OPEN";
         const normalizedStatus =
-          adoptedFromManual || originalStatus === "EXECUTED"
+          originalStatus === "EXECUTED"
             ? "EXECUTED"
             : originalStatus === "FAILED"
               ? "FAILED"
@@ -517,7 +486,6 @@ export class TradeRuntimeSyncService {
           ...legObj,
           ...(requestId !== undefined ? { requestId } : {}),
           status: normalizedStatus,
-          ...(adoptedFromManual ? { adoptedFromManual: true } : {}),
           ...(currentStopLoss !== undefined ? { currentStopLoss } : {}),
           runtimePayload: {
             matchedOpenPositions: openMatches.slice(0, MAX_TRADE_OPEN_POSITIONS),
@@ -544,22 +512,7 @@ export class TradeRuntimeSyncService {
       let finalLegTrail = existingFinalLegTrail;
       let signalMagnitudeRebase = existingSignalMagnitudeRebase;
       let nextErrorMessage = trade.errorMessage;
-      const adoptedLegs = normalizedLegs.filter((leg) => leg.adoptedFromManual === true);
-      const runtimeAdoption =
-        adoptedLegs.length > 0
-          ? {
-              status: "COMPLETED",
-              adoptedAt: new Date().toISOString(),
-              adoptedLegs: adoptedLegs.map((leg) => ({
-                leg: asNumber(leg.leg) ?? -1,
-                requestId: extractRequestId(leg)
-              }))
-            }
-          : toObj(providerResponse.runtimeAdoption) ?? {};
-
-      if (adoptedLegs.length > 0 && (nextErrorMessage ?? "").includes("Executed 0/")) {
-        nextErrorMessage = undefined;
-      }
+      const runtimeAdoption = toObj(providerResponse.runtimeAdoption) ?? {};
 
       if (openExecutedLegs.length > 0 && asString(existingSignalMagnitudeRebase.status) !== "COMPLETED") {
         const movedLegs: Array<{ leg: number; requestId: number; newStopLoss: number; newTakeProfit: number }> = [];

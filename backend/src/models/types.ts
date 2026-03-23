@@ -114,14 +114,17 @@ export type ExecutionMode = "DEMO" | "LIVE";
 
 export interface TelegramDraft {
   chatId: string;
-  rawMessage: string;
-  trade: ParsedTrade;
-  warnings: string[];
-  targetAccount: string;
-  lotSize: number;
-  destinationBrokerSymbol: string;
+  text?: string;
+  mode?: string;
+  metadata?: Record<string, unknown>;
+  rawMessage?: string;
+  trade?: ParsedTrade;
+  warnings?: string[];
+  targetAccount?: string;
+  lotSize?: number;
+  destinationBrokerSymbol?: string;
   note?: string;
-  createdAt: string;
+  createdAt?: string;
   updatedAt: string;
 }
 
