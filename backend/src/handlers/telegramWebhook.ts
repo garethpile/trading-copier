@@ -20,6 +20,14 @@ type TelegramUpdate = {
   };
 };
 
+type TelegramConfigBundle = {
+  lotConfig: LotSizeConfig;
+  targetConfig: TargetAccountsConfig;
+  loadedAtMs: number;
+};
+
+const telegramConfigCache = new Map<string, Promise<TelegramConfigBundle>>();
+
 const lotRange = () => ({
   min: Number(process.env.LOT_SIZE_MIN ?? "0.01"),
   max: Number(process.env.LOT_SIZE_MAX ?? "50")
@@ -34,6 +42,58 @@ const splitCsvSet = (value?: string): Set<string> =>
   );
 
 const normalizeText = (value?: string): string => (value ?? "").trim();
+
+const loadTelegramConfigBundle = async (
+  repository: TradeRepository,
+  configUserId: string
+): Promise<TelegramConfigBundle> => {
+  const [lotConfig, targetConfig] = await Promise.all([
+    repository.getLotSizeConfig(configUserId),
+    repository.getTargetAccountsConfig(configUserId)
+  ]);
+  return {
+    lotConfig,
+    targetConfig,
+    loadedAtMs: Date.now()
+  };
+};
+
+const getTelegramConfigBundle = async (
+  repository: TradeRepository,
+  configUserId: string
+): Promise<TelegramConfigBundle> => {
+  let cached = telegramConfigCache.get(configUserId);
+  if (!cached) {
+    cached = loadTelegramConfigBundle(repository, configUserId);
+    telegramConfigCache.set(configUserId, cached);
+  }
+
+  try {
+    return await cached;
+  } catch (error) {
+    telegramConfigCache.delete(configUserId);
+    throw error;
+  }
+};
+
+const refreshTelegramConfigBundle = async (
+  repository: TradeRepository,
+  configUserId: string
+): Promise<TelegramConfigBundle> => {
+  const next = loadTelegramConfigBundle(repository, configUserId);
+  telegramConfigCache.set(configUserId, next);
+
+  try {
+    return await next;
+  } catch (error) {
+    telegramConfigCache.delete(configUserId);
+    throw error;
+  }
+};
+
+const invalidateTelegramConfigBundle = (configUserId: string): void => {
+  telegramConfigCache.delete(configUserId);
+};
 
 const modeAccount = (config: TargetAccountsConfig, mode: ExecutionMode): string => {
   const mapped = config.modeAccounts?.[mode];
@@ -113,8 +173,7 @@ const handleAdmin = async (
   chatId: string,
   configUserId: string
 ): Promise<void> => {
-  const lotConfig = await repository.getLotSizeConfig(configUserId);
-  const targetConfig = await repository.getTargetAccountsConfig(configUserId);
+  const { lotConfig, targetConfig } = await getTelegramConfigBundle(repository, configUserId);
   await sendTelegramMessage(
     botToken,
     chatId,
@@ -313,16 +372,17 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const executionUserId = configUserId;
 
   const configLoadStartedAt = Date.now();
-  const lotConfig = await repository.getLotSizeConfig(configUserId);
-  const targetConfig = await repository.getTargetAccountsConfig(configUserId);
+  const configBundle = await getTelegramConfigBundle(repository, configUserId);
   const profile = await repository.getTelegramProfile(chatId);
   const configLoadMs = Date.now() - configLoadStartedAt;
+  const { lotConfig, targetConfig, loadedAtMs } = configBundle;
 
   console.log("telegramWebhook request timing", {
     chatId,
     updateId,
     configUserId,
     configLoadMs,
+    configCacheAgeMs: Date.now() - loadedAtMs,
     elapsedSoFarMs: Date.now() - startedAt
   });
 
@@ -390,6 +450,24 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return jsonResponse(200, { ok: true });
   }
 
+  if (text === "/metadatarefresh") {
+    const refreshStartedAt = Date.now();
+    const refreshed = await refreshTelegramConfigBundle(repository, configUserId);
+    await sendTelegramMessage(
+      botToken,
+      chatId,
+      [
+        "Metadata refreshed.",
+        `Loaded symbols: ${Object.keys(refreshed.lotConfig.symbols).length}`,
+        `Execution mode: ${refreshed.targetConfig.executionMode ?? "DEMO"}`,
+        `DEMO account: ${modeAccount(refreshed.targetConfig, "DEMO") || "-"}`,
+        `LIVE account: ${modeAccount(refreshed.targetConfig, "LIVE") || "-"}`,
+        `Load time: ${Date.now() - refreshStartedAt}ms`
+      ].join("\n")
+    );
+    return jsonResponse(200, { ok: true });
+  }
+
   if (text === "/sync") {
     const runtimeSync = new TradeRuntimeSyncService(repository);
     const trades = await repository.getHistory(executionUserId, 20);
@@ -426,6 +504,11 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       updatedAt: new Date().toISOString()
     };
     await repository.putTargetAccountsConfig(configUserId, nextConfig);
+    telegramConfigCache.set(configUserId, Promise.resolve({
+      lotConfig,
+      targetConfig: nextConfig,
+      loadedAtMs: Date.now()
+    }));
     await sendTelegramMessage(
       botToken,
       chatId,

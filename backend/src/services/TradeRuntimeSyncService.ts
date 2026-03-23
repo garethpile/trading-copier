@@ -25,6 +25,7 @@ const toObj = (value: unknown): Obj | undefined =>
   value && typeof value === "object" ? (value as Obj) : undefined;
 
 const toArray = (value: unknown): Obj[] => (Array.isArray(value) ? (value as Obj[]) : []);
+const stableJson = (value: unknown): string => JSON.stringify(value);
 
 const extractRequestId = (position: Obj): number | undefined => {
   const nested = asNumber(position.providerResponse && toObj(position.providerResponse)?.requestId);
@@ -707,7 +708,7 @@ export class TradeRuntimeSyncService {
       const previousSignalMagnitudeStatus = asString(existingSignalMagnitudeRebase.status);
       const previousFinalLegTrailStatus = asString(existingFinalLegTrail.status);
 
-      const nextProviderResponse: Obj = {
+      const nextProviderResponseCore: Obj = {
         ...providerResponse,
         legs: normalizedLegs,
         runtimePayload: {
@@ -717,17 +718,30 @@ export class TradeRuntimeSyncService {
         runtimeAdoption,
         signalMagnitudeRebase,
         breakeven,
-        finalLegTrail,
-        lastLiveSyncAt: new Date().toISOString()
+        finalLegTrail
       };
 
-      await this.repository.updateProviderResponse({
-        userId: trade.userId,
-        signalId: trade.signalId,
-        createdAt: trade.createdAt,
-        providerResponse: nextProviderResponse,
-        errorMessage: nextErrorMessage
-      });
+      const { lastLiveSyncAt: _ignoredLastLiveSyncAt, ...currentComparable } = providerResponse;
+      const providerResponseChanged = stableJson(currentComparable) !== stableJson(nextProviderResponseCore);
+      const errorChanged = (nextErrorMessage ?? null) !== (trade.errorMessage ?? null);
+      const shouldPersist = providerResponseChanged || errorChanged;
+
+      const nextProviderResponse: Obj = shouldPersist
+        ? {
+            ...nextProviderResponseCore,
+            lastLiveSyncAt: new Date().toISOString()
+          }
+        : providerResponse;
+
+      if (shouldPersist) {
+        await this.repository.updateProviderResponse({
+          userId: trade.userId,
+          signalId: trade.signalId,
+          createdAt: trade.createdAt,
+          providerResponse: nextProviderResponse,
+          errorMessage: nextErrorMessage
+        });
+      }
 
       const nextBreakevenStatus = asString(breakeven.status);
       const nextSignalMagnitudeStatus = asString(signalMagnitudeRebase.status);
@@ -761,10 +775,15 @@ export class TradeRuntimeSyncService {
         ]);
       }
 
-      updated.push({
-        ...trade,
-        providerResponse: nextProviderResponse
-      });
+      updated.push(
+        shouldPersist
+          ? {
+              ...trade,
+              providerResponse: nextProviderResponse,
+              errorMessage: nextErrorMessage
+            }
+          : trade
+      );
     }
 
     return updated;

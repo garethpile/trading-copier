@@ -19,6 +19,7 @@ const asString = (value: unknown): string | undefined =>
   typeof value === "string" && value.trim() ? value.trim() : undefined;
 const toObj = (value: unknown): GenericObject | undefined =>
   value && typeof value === "object" ? (value as GenericObject) : undefined;
+const stableJson = (value: unknown): string => JSON.stringify(value);
 
 const extractRequestId = (position: GenericObject): number | undefined => {
   const providerResponse =
@@ -162,10 +163,11 @@ export class BreakevenWebsocketAutomation {
   private readonly socketUrl: string;
   private readonly tradingBaseUrl: string;
   private readonly automationUserId: string;
-  private readonly pollMs: number;
   private readonly requestMatchWindowMs: number;
   private readonly openPositionsByAccount = new Map<string, GenericObject[]>();
   private readonly historyByAccount = new Map<string, GenericObject[]>();
+  private readonly pendingAccountIds = new Set<string>();
+  private evaluationTimer?: NodeJS.Timeout;
   private evaluating = false;
 
   constructor(private readonly repository: TradeRepository) {
@@ -174,7 +176,6 @@ export class BreakevenWebsocketAutomation {
     this.socketUrl = process.env.METACOPIER_SOCKET_URL ?? "wss://api.metacopier.io/ws/api/v1";
     this.tradingBaseUrl = process.env.METACOPIER_BASE_URL ?? "https://api-london.metacopier.io";
     this.automationUserId = process.env.AUTOMATION_USER_ID ?? process.env.LOCAL_USER_ID ?? "local-user";
-    this.pollMs = Number(process.env.BREAKEVEN_POLL_MS ?? "5000");
     this.requestMatchWindowMs = Math.max(
       60_000,
       Number(process.env.REQUEST_MATCH_WINDOW_MS ?? String(15 * 60 * 1000))
@@ -225,10 +226,6 @@ export class BreakevenWebsocketAutomation {
     };
 
     client.activate();
-
-    setInterval(() => {
-      void this.evaluateAndMoveBreakEven();
-    }, this.pollMs);
   }
 
   private handleSocketMessage(rawBody: string): void {
@@ -241,6 +238,7 @@ export class BreakevenWebsocketAutomation {
 
       if (type === "UpdateOpenPositionsDTO") {
         this.openPositionsByAccount.set(accountId, toArray(data.openPositions));
+        this.scheduleEvaluation(accountId);
         return;
       }
 
@@ -255,6 +253,7 @@ export class BreakevenWebsocketAutomation {
         const merged = [...existing, ...incoming];
         const bounded = merged.slice(-MAX_ACCOUNT_HISTORY_EVENTS);
         this.historyByAccount.set(accountId, bounded);
+        this.scheduleEvaluation(accountId);
         return;
       }
     } catch (error) {
@@ -262,19 +261,35 @@ export class BreakevenWebsocketAutomation {
     }
   }
 
+  private scheduleEvaluation(accountId: string): void {
+    this.pendingAccountIds.add(accountId);
+    if (this.evaluationTimer) return;
+    this.evaluationTimer = setTimeout(() => {
+      this.evaluationTimer = undefined;
+      void this.evaluateAndMoveBreakEven();
+    }, 250);
+  }
+
   private async evaluateAndMoveBreakEven(): Promise<void> {
     if (this.evaluating) return;
     this.evaluating = true;
 
     try {
+      const accountIds =
+        this.pendingAccountIds.size > 0 ? new Set(this.pendingAccountIds) : undefined;
+      this.pendingAccountIds.clear();
       const trades = await this.repository.getHistory(this.automationUserId, 100);
       for (const trade of trades) {
+        if (accountIds && !accountIds.has(trade.targetAccount)) continue;
         await this.processTrade(trade);
       }
     } catch (error) {
       console.error("Breakeven evaluation failed", String(error));
     } finally {
       this.evaluating = false;
+      if (this.pendingAccountIds.size > 0 && !this.evaluationTimer) {
+        this.scheduleEvaluation(Array.from(this.pendingAccountIds)[0]);
+      }
     }
   }
 
@@ -591,18 +606,27 @@ export class BreakevenWebsocketAutomation {
       }
     }
 
-    const updatedProviderResponse: GenericObject = {
+    const updatedProviderResponseCore: GenericObject = {
       ...providerResponse,
       legs: normalizedLegs,
       runtimePayload: {
         matchedOpenPositions: matchedOpenPositions.slice(0, MAX_TRADE_OPEN_POSITIONS),
         matchedHistoryEvents: matchedHistoryEvents.slice(-MAX_TRADE_HISTORY_EVENTS)
       },
-      lastLiveSyncAt: new Date().toISOString(),
       signalMagnitudeRebase: nextSignalMagnitudeRebase,
       breakeven: nextBreakeven,
       finalLegTrail: nextFinalLegTrail,
       runtimeAdoption
+    };
+
+    const { lastLiveSyncAt: _ignoredLastLiveSyncAt, ...currentComparable } = providerResponse;
+    const providerResponseChanged = stableJson(currentComparable) !== stableJson(updatedProviderResponseCore);
+    const errorChanged = (nextErrorMessage ?? null) !== (trade.errorMessage ?? null);
+    if (!(providerResponseChanged || errorChanged)) return;
+
+    const updatedProviderResponse: GenericObject = {
+      ...updatedProviderResponseCore,
+      lastLiveSyncAt: new Date().toISOString()
     };
 
     await this.repository.updateProviderResponse({

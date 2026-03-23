@@ -383,7 +383,7 @@ export class TradingCopierStack extends cdk.Stack {
     metacopierSecret.grantRead(workerTaskDef.taskRole);
 
     new events.Rule(this, "RuntimeSyncScheduleRule", {
-      schedule: events.Schedule.rate(cdk.Duration.minutes(1)),
+      schedule: events.Schedule.rate(cdk.Duration.minutes(5)),
       targets: [new targets.LambdaFunction(runRuntimeSyncFn)]
     });
 
