@@ -31,7 +31,7 @@ const costCenter = process.env.COST_CENTER;
 const stack = new TradingCopierStack(app, "TradingCopierStack", {
   env: {
     account: process.env.CDK_DEFAULT_ACCOUNT,
-    region: process.env.CDK_DEFAULT_REGION
+    region: process.env.CDK_DEFAULT_REGION ?? "eu-west-1"
   }
 });
 

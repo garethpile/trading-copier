@@ -68,14 +68,18 @@ export class TradingCopierStack extends cdk.Stack {
     const region = cdk.Stack.of(this).region;
     const hostedUiDomainPrefix =
       process.env.COGNITO_DOMAIN_PREFIX?.trim() || `tradingcopier-${account}-${region}`;
+    const defaultFrontendOrigins = [
+      "http://localhost:5173",
+      "https://drppa7twrc4zh.cloudfront.net"
+    ];
     const callbackUrls = (
-      process.env.COGNITO_CALLBACK_URLS?.trim() || "http://localhost:5173"
+      process.env.COGNITO_CALLBACK_URLS?.trim() || defaultFrontendOrigins.join(",")
     )
       .split(",")
       .map((value) => value.trim())
       .filter(Boolean);
     const logoutUrls = (
-      process.env.COGNITO_LOGOUT_URLS?.trim() || "http://localhost:5173"
+      process.env.COGNITO_LOGOUT_URLS?.trim() || defaultFrontendOrigins.join(",")
     )
       .split(",")
       .map((value) => value.trim())

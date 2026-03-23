@@ -288,7 +288,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const text = normalizeText(update.message?.text);
   const chatId = String(update.message?.chat?.id ?? "");
   const fromUserId = update.message?.from?.id !== undefined ? String(update.message.from.id) : undefined;
-  if (!chatId || !text) {
+  if (!chatId || (!text && !caption && !update.message?.photo?.length && !update.message?.document?.file_id)) {
     return jsonResponse(200, { ok: true });
   }
 
@@ -430,6 +430,25 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return jsonResponse(200, { ok: true });
   }
 
+  const currentDraft = await repository.getTelegramDraft(chatId);
+  if (currentDraft?.mode === 'TRADELOG_AWAITING_SCREENSHOT' && (update.message?.photo?.length || update.message?.document?.file_id)) {
+    const photo = update.message?.photo?.[update.message.photo.length - 1];
+    const fileId = photo?.file_id ?? update.message?.document?.file_id ?? '';
+    await repository.putTelegramDraft({
+      chatId,
+      text: caption || '',
+      mode: 'TRADELOG_SCREENSHOT_RECEIVED',
+      metadata: {
+        fileId,
+        caption: caption || '',
+        source: update.message?.photo?.length ? 'photo' : 'document'
+      },
+      updatedAt: new Date().toISOString()
+    });
+    await sendTelegramMessage(botToken, chatId, 'Screenshot received for trade log. Extraction/persistence wiring is the next step.');
+    return jsonResponse(200, { ok: true });
+  }
+
   if (text.startsWith("/lot")) {
     const parts = text.split(/\s+/).filter(Boolean);
     const arg = parts[1]?.toLowerCase();
@@ -469,6 +488,16 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     executionUserId,
     rawMessage: text,
     parsedTrade: parsed.trade,
+    parseWarnings: parsed.warnings,
+    lotConfig,
+    targetConfig,
+    lotOverride: profile?.lotOverride,
+    updateId
+  });
+
+  return jsonResponse(200, { ok: true });
+};
+de,
     parseWarnings: parsed.warnings,
     lotConfig,
     targetConfig,

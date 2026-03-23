@@ -387,7 +387,14 @@ export class TradeRepository {
       })
     );
     const item = out.Item as TelegramDraft | undefined;
-    return item;
+    if (!item) return undefined;
+    return {
+      chatId: item.chatId,
+      text: item.text,
+      updatedAt: item.updatedAt,
+      ...(item.mode ? { mode: item.mode } : {}),
+      ...(item.metadata && typeof item.metadata === 'object' ? { metadata: item.metadata as Record<string, unknown> } : {})
+    };
   }
 
   async putTelegramDraft(draft: TelegramDraft): Promise<void> {

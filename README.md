@@ -95,6 +95,7 @@ The backend is intended for Lambda deployment through CDK. Configure values from
 ```bash
 npm run -w backend build
 export METACOPIER_API_KEY='your-real-api-key'
+export CDK_DEFAULT_REGION='eu-west-1'
 npm run -w infra/cdk synth
 npm run -w infra/cdk deploy
 ```
