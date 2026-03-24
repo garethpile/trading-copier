@@ -1,5 +1,12 @@
 import { ParseSignalResponse, ParsedTrade, TradeOrderType, TradeSide } from "../models/types";
 
+const normalizeInput = (raw: string): string =>
+  raw
+    .normalize("NFKC")
+    .replace(/[\u200B-\u200D\uFEFF]/g, "")
+    .replace(/[│┃¦｜]/g, "|")
+    .replace(/\u00A0/g, " ");
+
 const stripDecorators = (line: string): string =>
   line
     .replace(/[✅❌🟢🔴⚠️🔥⭐]+/g, "")
@@ -16,7 +23,7 @@ export const parseSignal = (rawMessage: string): ParseSignalResponse => {
   const warnings: string[] = [];
   const errors: string[] = [];
 
-  const lines = rawMessage
+  const lines = normalizeInput(rawMessage)
     .split(/\r?\n/)
     .map(stripDecorators)
     .filter(Boolean);
