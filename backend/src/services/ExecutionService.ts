@@ -1,6 +1,7 @@
 import { buildExecutionProvider } from "../providers/ExecutionProviderFactory";
 import { TradeRepository, DuplicateTradeError } from "../repositories/TradeRepository";
 import { ExecuteTradeRequest, ExecuteTradeResolvedRequest, RiskTradesMode, TradeRecord } from "../models/types";
+import { TradeRuntimeSyncService } from "./TradeRuntimeSyncService";
 import { makeDedupeKey, makeSignalId } from "../utils/ids";
 
 type LegResult = {
@@ -32,6 +33,45 @@ const selectRiskTradeLegs = (
 
 export class ExecutionService {
   constructor(private readonly repository: TradeRepository) {}
+
+  private async applyImmediateRuntimeSync(
+    userId: string,
+    trade: TradeRecord
+  ): Promise<{ trade: TradeRecord; attempts: number; durationMs: number }> {
+    const attempts = Math.max(1, Number(process.env.IMMEDIATE_RUNTIME_SYNC_ATTEMPTS ?? "4"));
+    const delayMs = Math.max(0, Number(process.env.IMMEDIATE_RUNTIME_SYNC_DELAY_MS ?? "350"));
+    const runtimeSync = new TradeRuntimeSyncService(this.repository);
+    const startedAt = Date.now();
+    let currentTrade = trade;
+    let usedAttempts = 0;
+
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      usedAttempts = attempt + 1;
+      const [syncedTrade] = await runtimeSync.sync(userId, [currentTrade]);
+      if (syncedTrade) {
+        currentTrade = syncedTrade;
+      }
+
+      const providerResponse =
+        currentTrade.providerResponse && typeof currentTrade.providerResponse === "object"
+          ? (currentTrade.providerResponse as { signalMagnitudeRebase?: { status?: unknown } })
+          : undefined;
+      const rebaseStatus = providerResponse?.signalMagnitudeRebase?.status;
+      if (typeof rebaseStatus === "string" && rebaseStatus.trim()) {
+        break;
+      }
+
+      if (attempt < attempts - 1 && delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+    }
+
+    return {
+      trade: currentTrade,
+      attempts: usedAttempts,
+      durationMs: Date.now() - startedAt
+    };
+  }
 
   async execute(
     userId: string,
@@ -137,7 +177,7 @@ export class ExecutionService {
       .filter((value): value is string => Boolean(value))
       .join(",");
 
-    const providerResponse: Record<string, unknown> = {
+    let providerResponse: Record<string, unknown> = {
       mode: "MULTI_TP_LEGS",
       destinationBrokerSymbol,
       legs: legResults,
@@ -153,6 +193,23 @@ export class ExecutionService {
       ...(req.receivedAt ? { receivedAt: req.receivedAt } : {}),
       ...(req.dedupeKey ? { clientDedupeKey: req.dedupeKey } : {})
     };
+
+    let immediateRuntimeSyncMs = 0;
+    let immediateRuntimeSyncAttempts = 0;
+    if (successfulLegs.length > 0) {
+      const runtimeSyncResult = await this.applyImmediateRuntimeSync(userId, {
+        ...record,
+        providerResponse
+      });
+      immediateRuntimeSyncMs = runtimeSyncResult.durationMs;
+      immediateRuntimeSyncAttempts = runtimeSyncResult.attempts;
+      if (
+        runtimeSyncResult.trade.providerResponse &&
+        typeof runtimeSyncResult.trade.providerResponse === "object"
+      ) {
+        providerResponse = runtimeSyncResult.trade.providerResponse as Record<string, unknown>;
+      }
+    }
 
     if (failedLegs.length === 0) {
       const executedAt = new Date().toISOString();
@@ -170,6 +227,8 @@ export class ExecutionService {
 
       providerResponse.timings = {
         ...(providerResponse.timings as Record<string, number>),
+        immediateRuntimeSyncMs,
+        immediateRuntimeSyncAttempts,
         updateTradeMs,
         totalMs: Date.now() - serviceStartedAt
       };
@@ -200,6 +259,8 @@ export class ExecutionService {
 
     providerResponse.timings = {
       ...(providerResponse.timings as Record<string, number>),
+      immediateRuntimeSyncMs,
+      immediateRuntimeSyncAttempts,
       updateTradeMs,
       totalMs: Date.now() - serviceStartedAt
     };
