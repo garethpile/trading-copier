@@ -17,6 +17,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
           accounts?: unknown;
           executionMode?: unknown;
           modeAccounts?: unknown;
+          riskTrades?: unknown;
         })
       : {};
     const accounts = Array.isArray(body.accounts)
@@ -41,6 +42,9 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       modeAccountsInput.LIVE && unique.includes(String(modeAccountsInput.LIVE))
         ? String(modeAccountsInput.LIVE)
         : unique[1] ?? unique[0];
+    const riskTrades = body.riskTrades === "1" || body.riskTrades === "2" || body.riskTrades === "all"
+      ? body.riskTrades
+      : "all";
 
     const repository = new TradeRepository(tableName);
     const next: TargetAccountsConfig = {
@@ -50,6 +54,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         DEMO: demoAccount,
         LIVE: liveAccount
       },
+      riskTrades,
       updatedAt: new Date().toISOString()
     };
     await repository.putTargetAccountsConfig(userId, next);

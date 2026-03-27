@@ -1,6 +1,6 @@
 import { buildExecutionProvider } from "../providers/ExecutionProviderFactory";
 import { TradeRepository, DuplicateTradeError } from "../repositories/TradeRepository";
-import { ExecuteTradeRequest, ExecuteTradeResolvedRequest, TradeRecord } from "../models/types";
+import { ExecuteTradeRequest, ExecuteTradeResolvedRequest, RiskTradesMode, TradeRecord } from "../models/types";
 import { makeDedupeKey, makeSignalId } from "../utils/ids";
 
 type LegResult = {
@@ -11,6 +11,23 @@ type LegResult = {
   executionId?: string;
   message: string;
   providerResponse?: unknown;
+};
+
+const selectRiskTradeLegs = (
+  takeProfits: number[],
+  riskTrades?: RiskTradesMode
+): Array<{ leg: number; takeProfit: number }> => {
+  const validLegs = takeProfits
+    .map((takeProfit, index) => ({ leg: index + 1, takeProfit }))
+    .filter(({ takeProfit }) => Number.isFinite(takeProfit) && takeProfit > 0);
+
+  if (riskTrades === "1") {
+    return validLegs.filter(({ leg }) => leg === 2);
+  }
+  if (riskTrades === "2") {
+    return validLegs.filter(({ leg }) => leg === 1 || leg === 2);
+  }
+  return validLegs;
 };
 
 export class ExecutionService {
@@ -53,13 +70,23 @@ export class ExecutionService {
     const serviceStartedAt = Date.now();
     const createdAt = new Date().toISOString();
     const signalId = makeSignalId(createdAt);
+    const selectedLegs = selectRiskTradeLegs(req.trade.takeProfits, req.riskTrades);
+    if (selectedLegs.length === 0) {
+      return {
+        status: "FAILED" as const,
+        signalId,
+        provider: "MetaCopier",
+        message: `No TP legs available for riskTrades=${req.riskTrades ?? "all"}`,
+        errors: [`No TP legs available for riskTrades=${req.riskTrades ?? "all"}`]
+      };
+    }
     const dedupeKey = req.dedupeKey ?? makeDedupeKey({
       symbol: req.trade.symbol,
       side: req.trade.side,
       orderType: req.trade.orderType,
       entry: req.trade.entry,
       stopLoss: req.trade.stopLoss,
-      takeProfits: req.trade.takeProfits,
+      takeProfits: selectedLegs.map((leg) => leg.takeProfit),
       targetAccount: req.targetAccount,
       lotSize: req.lotSize
     });
@@ -100,7 +127,7 @@ export class ExecutionService {
 
     const destinationBrokerSymbol = req.destinationBrokerSymbol.trim().toUpperCase();
     const executeLegsStartedAt = Date.now();
-    const legResults = await this.executeLegs(req, destinationBrokerSymbol);
+    const legResults = await this.executeLegs(req, destinationBrokerSymbol, selectedLegs);
     const executeLegsMs = Date.now() - executeLegsStartedAt;
 
     const failedLegs = legResults.filter((leg) => leg.status === "FAILED");
@@ -114,6 +141,7 @@ export class ExecutionService {
       mode: "MULTI_TP_LEGS",
       destinationBrokerSymbol,
       legs: legResults,
+      riskTrades: req.riskTrades ?? "all",
       timings: {
         dedupeMs,
         createTradeMs,
@@ -186,15 +214,18 @@ export class ExecutionService {
     };
   }
 
-  private async executeLegs(req: ExecuteTradeResolvedRequest, destinationBrokerSymbol: string): Promise<LegResult[]> {
+  private async executeLegs(
+    req: ExecuteTradeResolvedRequest,
+    destinationBrokerSymbol: string,
+    selectedLegs: Array<{ leg: number; takeProfit: number }>
+  ): Promise<LegResult[]> {
     const provider = buildExecutionProvider();
     const normalizedSymbol = req.trade.symbol.toUpperCase();
-    const tpLevels = req.trade.takeProfits.filter((tp) => Number.isFinite(tp) && tp > 0);
-    const maxBase = Math.max(0, 999 - Math.max(0, tpLevels.length - 1));
+    const maxBase = Math.max(0, 999 - Math.max(0, selectedLegs.length - 1));
     const requestIdBase = Math.floor(Math.random() * (maxBase + 1));
 
-    const legPromises = tpLevels.map(async (tp, index) => {
-      const legNote = req.note ? `TP${index + 1} ${req.note}` : `TP${index + 1}`;
+    const legPromises = selectedLegs.map(async ({ leg, takeProfit }, index) => {
+      const legNote = req.note ? `TP${leg} ${req.note}` : `TP${leg}`;
       const requestId = requestIdBase + index;
       const result = await provider.executeTrade({
         symbol: normalizedSymbol,
@@ -203,7 +234,7 @@ export class ExecutionService {
         orderType: req.trade.orderType,
         entry: req.trade.entry,
         stopLoss: req.trade.stopLoss,
-        takeProfits: [tp],
+        takeProfits: [takeProfit],
         lotSize: req.lotSize,
         targetAccount: req.targetAccount,
         note: legNote,
@@ -211,8 +242,8 @@ export class ExecutionService {
       });
 
       const legRecord: LegResult = {
-        leg: index + 1,
-        takeProfit: tp,
+        leg,
+        takeProfit,
         status: result.status === "EXECUTED" ? "EXECUTED" : "FAILED",
         requestId: result.requestId ?? requestId,
         message: result.message

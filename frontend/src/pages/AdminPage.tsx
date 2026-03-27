@@ -62,6 +62,7 @@ export function AdminPage() {
   const [loading, setLoading] = useState(false);
 
   const executionMode = accountsConfig?.executionMode ?? "DEMO";
+  const riskTrades = accountsConfig?.riskTrades ?? "all";
   const statusClass = (value: string) =>
     value === "OK" || value === "SUCCESS" || value === "ENABLED" ? "status-ok" : "status-bad";
 
@@ -337,6 +338,27 @@ export function AdminPage() {
                 </select>
               </label>
 
+              <label>
+                Risk Trades
+                <select
+                  value={riskTrades}
+                  onChange={(e) =>
+                    setAccountsConfig((prev) =>
+                      prev
+                        ? {
+                            ...prev,
+                            riskTrades: e.target.value === "1" || e.target.value === "2" ? e.target.value : "all"
+                          }
+                        : prev
+                    )
+                  }
+                >
+                  <option value="1">1: place trade 2 only</option>
+                  <option value="2">2: place trades 1 and 2</option>
+                  <option value="all">all: place trades 1, 2 and 3</option>
+                </select>
+              </label>
+
               <button
                 type="button"
                 className="ghost"
@@ -349,7 +371,9 @@ export function AdminPage() {
                     setManagementMessage(undefined);
                     const saved = await updateTargetAccountsConfig(accountsConfig);
                     setAccountsConfig(saved);
-                    setManagementMessage(`Target accounts saved. Mode: ${saved.executionMode ?? "DEMO"}`);
+                    setManagementMessage(
+                      `Target accounts saved. Mode: ${saved.executionMode ?? "DEMO"}, riskTrades: ${saved.riskTrades ?? "all"}`
+                    );
                     await Promise.all(saved.accounts.map((accountId) => refreshSocketStatus(accountId)));
                   } catch (error) {
                     setManagementError(String(error));

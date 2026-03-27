@@ -28,6 +28,7 @@ export interface ExecuteTradeRequest {
   targetAccount: string;
   lotSize: number;
   note?: string;
+  riskTrades?: RiskTradesMode;
 }
 
 export interface ExecuteTradeResolvedRequest extends ExecuteTradeRequest {
@@ -107,10 +108,12 @@ export interface TargetAccountsConfig {
   accounts: string[];
   executionMode?: ExecutionMode;
   modeAccounts?: Partial<Record<ExecutionMode, string>>;
+  riskTrades?: RiskTradesMode;
   updatedAt?: string;
 }
 
 export type ExecutionMode = "DEMO" | "LIVE";
+export type RiskTradesMode = "1" | "2" | "all";
 
 export interface TelegramDraft {
   chatId: string;

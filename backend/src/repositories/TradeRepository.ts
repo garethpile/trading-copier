@@ -12,6 +12,7 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import {
   LotSizeConfig,
+  RiskTradesMode,
   SymbolConfig,
   TelegramProfile,
   TargetAccountsConfig,
@@ -326,6 +327,7 @@ export class TradeRepository {
       accounts?: string[];
       executionMode?: "DEMO" | "LIVE";
       modeAccounts?: Partial<Record<"DEMO" | "LIVE", string>>;
+      riskTrades?: unknown;
       updatedAt?: string;
     } | undefined;
     if (!item || !Array.isArray(item.accounts) || item.accounts.length === 0) {
@@ -335,7 +337,8 @@ export class TradeRepository {
         modeAccounts: {
           DEMO: fallbackAccounts[0],
           LIVE: fallbackAccounts[1] ?? fallbackAccounts[0]
-        }
+        },
+        riskTrades: "all"
       };
     }
 
@@ -344,6 +347,10 @@ export class TradeRepository {
     const demoAccount = modeAccounts.DEMO && accounts.includes(modeAccounts.DEMO) ? modeAccounts.DEMO : accounts[0];
     const liveCandidate = modeAccounts.LIVE && accounts.includes(modeAccounts.LIVE) ? modeAccounts.LIVE : accounts[1] ?? accounts[0];
     const executionMode = item.executionMode === "LIVE" ? "LIVE" : "DEMO";
+    const riskTrades: RiskTradesMode =
+      item.riskTrades === "1" || item.riskTrades === "2" || item.riskTrades === "all"
+        ? item.riskTrades
+        : "all";
 
     return {
       accounts,
@@ -352,6 +359,7 @@ export class TradeRepository {
         DEMO: demoAccount,
         LIVE: liveCandidate
       },
+      riskTrades,
       updatedAt: item.updatedAt
     };
   }
@@ -371,6 +379,7 @@ export class TradeRepository {
           accounts: config.accounts,
           executionMode: config.executionMode ?? "DEMO",
           modeAccounts: config.modeAccounts ?? {},
+          riskTrades: config.riskTrades ?? "all",
           updatedAt: config.updatedAt ?? new Date().toISOString()
         }
       })

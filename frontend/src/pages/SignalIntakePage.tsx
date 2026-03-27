@@ -22,6 +22,7 @@ export function SignalIntakePage() {
   const [accounts, setAccounts] = useState<string[]>(fallbackAccounts);
   const [modeAccounts, setModeAccounts] = useState<Partial<Record<"DEMO" | "LIVE", string>>>({});
   const [executionMode, setExecutionMode] = useState<"DEMO" | "LIVE">("DEMO");
+  const [riskTrades, setRiskTrades] = useState<"1" | "2" | "all">("all");
   const [lotSize, setLotSize] = useState(defaultLotSize);
   const [lotSizeConfig, setLotSizeConfig] = useState<{ defaultLotSize: number; symbols: Record<string, { lotSize: number; destinationBrokerSymbol: string }> }>({
     defaultLotSize,
@@ -51,6 +52,7 @@ export function SignalIntakePage() {
           setAccounts(config.accounts);
           setModeAccounts(config.modeAccounts ?? {});
           setExecutionMode(config.executionMode ?? "DEMO");
+          setRiskTrades(config.riskTrades ?? "all");
         }
       })
       .catch(() => undefined);
@@ -129,6 +131,13 @@ export function SignalIntakePage() {
           <label style={{ minWidth: 340 }}>
             Selected Account ID
             <input value={selectedAccount || "Not configured"} readOnly />
+          </label>
+          <label style={{ minWidth: 220 }}>
+            Risk Trades
+            <input
+              value={riskTrades === "1" ? "Trade 2 only" : riskTrades === "2" ? "Trades 1 and 2" : "All 3 trades"}
+              readOnly
+            />
           </label>
         </div>
         <label>

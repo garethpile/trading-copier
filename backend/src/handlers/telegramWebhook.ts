@@ -42,6 +42,26 @@ const splitCsvSet = (value?: string): Set<string> =>
   );
 
 const normalizeText = (value?: string): string => (value ?? "").trim();
+const summarizeRawMessage = (rawMessage: string) => {
+  const lines = rawMessage.split(/\r?\n/);
+  const nonAscii = Array.from(new Set(
+    Array.from(rawMessage)
+      .filter((char) => char.charCodeAt(0) > 127)
+      .map((char) => `U+${char.charCodeAt(0).toString(16).toUpperCase().padStart(4, "0")}`)
+  ));
+
+  return {
+    length: rawMessage.length,
+    lineCount: lines.length,
+    preview: JSON.stringify(rawMessage.slice(0, 500)),
+    lines: lines.slice(0, 12).map((line, index) => ({
+      index: index + 1,
+      text: JSON.stringify(line),
+      length: line.length
+    })),
+    nonAscii
+  };
+};
 
 const loadTelegramConfigBundle = async (
   repository: TradeRepository,
@@ -180,6 +200,7 @@ const handleAdmin = async (
     [
       "Admin Summary",
       `Execution mode: ${targetConfig.executionMode ?? "DEMO"}`,
+      `Risk trades: ${targetConfig.riskTrades ?? "all"}`,
       `DEMO account: ${modeAccount(targetConfig, "DEMO") || "-"}`,
       `LIVE account: ${modeAccount(targetConfig, "LIVE") || "-"}`,
       `Default lot: ${lotConfig.defaultLotSize}`,
@@ -225,6 +246,7 @@ const executeParsedTrade = async (input: {
     targetAccount,
     lotSize,
     destinationBrokerSymbol,
+    riskTrades: input.targetConfig.riskTrades ?? "all",
     mode,
     sourceMessageId: input.updateId !== undefined ? String(input.updateId) : undefined,
     receivedAt: new Date().toISOString()
@@ -394,6 +416,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         "Trading Copier Bot ready.",
         "Paste a signal and it will execute immediately.",
         `Mode: ${targetConfig.executionMode ?? "DEMO"}`,
+        `Risk trades: ${targetConfig.riskTrades ?? "all"}`,
         `DEMO account: ${modeAccount(targetConfig, "DEMO") || "-"}`,
         `LIVE account: ${modeAccount(targetConfig, "LIVE") || "-"}`,
         `Lot override: ${profile?.lotOverride ?? "none"}`,
@@ -460,6 +483,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         "Metadata refreshed.",
         `Loaded symbols: ${Object.keys(refreshed.lotConfig.symbols).length}`,
         `Execution mode: ${refreshed.targetConfig.executionMode ?? "DEMO"}`,
+        `Risk trades: ${refreshed.targetConfig.riskTrades ?? "all"}`,
         `DEMO account: ${modeAccount(refreshed.targetConfig, "DEMO") || "-"}`,
         `LIVE account: ${modeAccount(refreshed.targetConfig, "LIVE") || "-"}`,
         `Load time: ${Date.now() - refreshStartedAt}ms`
@@ -564,6 +588,13 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
   const parsed = parseSignal(text);
   if (!parsed.valid || !parsed.trade) {
+    console.error("telegramWebhook parse failed", {
+      chatId,
+      updateId,
+      errors: parsed.errors,
+      warnings: parsed.warnings,
+      rawSummary: summarizeRawMessage(text)
+    });
     await sendTelegramMessage(botToken, chatId, `Parse failed:\n${parsed.errors.join("\n")}`);
     return jsonResponse(200, { ok: true });
   }
