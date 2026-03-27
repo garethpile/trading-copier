@@ -139,6 +139,31 @@ const extractOrderType = (position: Obj, side: "BUY" | "SELL"): "Buy" | "Sell" =
   if (raw?.includes("buy")) return "Buy";
   return side === "BUY" ? "Buy" : "Sell";
 };
+const extractManagedStopLoss = (leg: Obj, trade: TradeRecord): number | undefined =>
+  asNumber(leg.managedStopLoss) ?? trade.stopLoss;
+const extractManagedTakeProfit = (leg: Obj, trade: TradeRecord, legNo?: number): number | undefined => {
+  const managed = asNumber(leg.managedTakeProfit ?? leg.takeProfit);
+  if (managed !== undefined) return managed;
+  if (!legNo) return undefined;
+  return asNumber(trade.takeProfits[legNo - 1]);
+};
+const hasManualTargetEdit = (input: {
+  position: Obj;
+  expectedStopLoss?: number;
+  expectedTakeProfit?: number;
+}): boolean => {
+  const actualStopLoss = extractStopLoss(input.position);
+  const actualTakeProfit = extractTakeProfit(input.position);
+  const stopLossChanged =
+    input.expectedStopLoss !== undefined &&
+    actualStopLoss !== undefined &&
+    !valuesMatch(input.expectedStopLoss, actualStopLoss);
+  const takeProfitChanged =
+    input.expectedTakeProfit !== undefined &&
+    actualTakeProfit !== undefined &&
+    !valuesMatch(input.expectedTakeProfit, actualTakeProfit);
+  return stopLossChanged || takeProfitChanged;
+};
 const MAX_TRADE_OPEN_POSITIONS = 20;
 const MAX_TRADE_HISTORY_EVENTS = 50;
 
@@ -461,6 +486,9 @@ export class TradeRuntimeSyncService {
           usedPositionIds.add(matchedPositionId);
         }
         const currentStopLoss = position ? extractStopLoss(position) : undefined;
+        const currentTakeProfit = position ? extractTakeProfit(position) : undefined;
+        const managedStopLoss = extractManagedStopLoss(legObj, trade);
+        const managedTakeProfit = extractManagedTakeProfit(legObj, trade, asNumber(legObj.leg));
         let runtimeState: "OPEN" | "CLOSED" | "UNKNOWN" = "UNKNOWN";
         if (openMatches.length > 0) {
           runtimeState = "OPEN";
@@ -488,6 +516,9 @@ export class TradeRuntimeSyncService {
           ...(requestId !== undefined ? { requestId } : {}),
           status: normalizedStatus,
           ...(currentStopLoss !== undefined ? { currentStopLoss } : {}),
+          ...(currentTakeProfit !== undefined ? { currentTakeProfit } : {}),
+          ...(managedStopLoss !== undefined ? { managedStopLoss } : {}),
+          ...(managedTakeProfit !== undefined ? { managedTakeProfit } : {}),
           runtimePayload: {
             matchedOpenPositions: openMatches.slice(0, MAX_TRADE_OPEN_POSITIONS),
             matchedHistoryEvents: previousHistoryEvents.slice(-MAX_TRADE_HISTORY_EVENTS)
@@ -518,6 +549,7 @@ export class TradeRuntimeSyncService {
       if (openExecutedLegs.length > 0 && asString(existingSignalMagnitudeRebase.status) !== "COMPLETED") {
         const movedLegs: Array<{ leg: number; requestId: number; newStopLoss: number; newTakeProfit: number }> = [];
         const failedLegs: Array<{ leg: number; reason: string }> = [];
+        const skippedLegs: Array<{ leg: number; reason: string }> = [];
         const riskDistance = Math.abs(trade.entry - trade.stopLoss);
 
         for (const leg of openExecutedLegs) {
@@ -539,6 +571,16 @@ export class TradeRuntimeSyncService {
             failedLegs.push({ leg: legNo, reason: "open position/openPrice unavailable" });
             continue;
           }
+          if (
+            hasManualTargetEdit({
+              position,
+              expectedStopLoss: extractManagedStopLoss(leg, trade),
+              expectedTakeProfit: extractManagedTakeProfit(leg, trade, legNo)
+            })
+          ) {
+            skippedLegs.push({ leg: legNo, reason: "manual SL/TP edit detected" });
+            continue;
+          }
           const newTakeProfit = openPrice + (signalTp - trade.entry);
           const newStopLoss = trade.side === "BUY" ? openPrice - riskDistance : openPrice + riskDistance;
           const moved = await this.modifyPositionTargets({
@@ -556,16 +598,20 @@ export class TradeRuntimeSyncService {
             continue;
           }
           leg.currentStopLoss = moved.verifiedStopLoss;
+          leg.currentTakeProfit = moved.verifiedTakeProfit;
+          leg.managedStopLoss = moved.verifiedStopLoss;
+          leg.managedTakeProfit = moved.verifiedTakeProfit;
           leg.takeProfit = moved.verifiedTakeProfit;
           movedLegs.push({ leg: legNo, requestId, newStopLoss, newTakeProfit });
         }
 
-        if (movedLegs.length > 0 || failedLegs.length > 0) {
+        if (movedLegs.length > 0 || failedLegs.length > 0 || skippedLegs.length > 0) {
           signalMagnitudeRebase = {
-            status: failedLegs.length === 0 ? "COMPLETED" : movedLegs.length > 0 ? "PARTIAL" : "FAILED",
+            status: failedLegs.length === 0 ? "COMPLETED" : movedLegs.length > 0 || skippedLegs.length > 0 ? "PARTIAL" : "FAILED",
             triggeredAt: new Date().toISOString(),
             movedLegs,
-            failedLegs
+            failedLegs,
+            skippedLegs
           };
           if (failedLegs.length > 0) {
             nextErrorMessage = `Signal magnitude rebase failed for ${failedLegs.length} leg(s)`;
@@ -577,6 +623,7 @@ export class TradeRuntimeSyncService {
       if (triggerClosed && asString(existingBe.status) !== "COMPLETED") {
         const movedLegs: Array<{ leg: number; positionId: string }> = [];
         const failedLegs: Array<{ leg: number; reason: string }> = [];
+        const skippedLegs: Array<{ leg: number; reason: string }> = [];
 
         for (const leg of normalizedLegs) {
           const legNo = asNumber(leg.leg);
@@ -599,6 +646,16 @@ export class TradeRuntimeSyncService {
             failedLegs.push({ leg: legNo, reason: "open position not found" });
             continue;
           }
+          if (
+            hasManualTargetEdit({
+              position,
+              expectedStopLoss: extractManagedStopLoss(leg, trade),
+              expectedTakeProfit: extractManagedTakeProfit(leg, trade, legNo)
+            })
+          ) {
+            skippedLegs.push({ leg: legNo, reason: "manual SL/TP edit detected" });
+            continue;
+          }
           // Profit-lock SL: move 5% of trigger-leg TP distance from entry toward TP.
           // BUY => slightly above entry, SELL => slightly below entry.
           const profitLockStop = trade.entry + (triggerTakeProfit - trade.entry) * 0.05;
@@ -618,16 +675,18 @@ export class TradeRuntimeSyncService {
           const positionId = extractPositionId(position);
           movedLegs.push({ leg: legNo, positionId: positionId ?? "-" });
           leg.currentStopLoss = moved.verifiedStopLoss;
+          leg.managedStopLoss = moved.verifiedStopLoss;
         }
 
         // Only finalize breakeven state when at least one leg was processed.
         // If no leg was moved/failed, keep BE pending so a later sync can still apply it.
-        if (movedLegs.length > 0 || failedLegs.length > 0) {
+        if (movedLegs.length > 0 || failedLegs.length > 0 || skippedLegs.length > 0) {
           breakeven = {
-            status: failedLegs.length === 0 ? "COMPLETED" : movedLegs.length > 0 ? "PARTIAL" : "FAILED",
+            status: failedLegs.length === 0 ? "COMPLETED" : movedLegs.length > 0 || skippedLegs.length > 0 ? "PARTIAL" : "FAILED",
             triggeredAt: new Date().toISOString(),
             movedLegs,
-            failedLegs
+            failedLegs,
+            skippedLegs
           };
           if (failedLegs.length > 0) {
             nextErrorMessage = "BE move partially failed";
@@ -656,6 +715,7 @@ export class TradeRuntimeSyncService {
           const targetStopLoss = trade.entry + (leg2ClosePrice - trade.entry) / 2;
           const movedLegs: Array<{ leg: number; requestId: number; newStopLoss: number }> = [];
           const failedLegs: Array<{ leg: number; reason: string }> = [];
+          const skippedLegs: Array<{ leg: number; reason: string }> = [];
           for (const openLeg of openExecutedLegs) {
             const legNo = asNumber(openLeg.leg);
             const legRequestId = extractRequestId(openLeg);
@@ -668,6 +728,16 @@ export class TradeRuntimeSyncService {
               matchedOpenPositions.find((p) => extractRequestId(p) === legRequestId) ?? openLegPosition;
             if (!position) {
               failedLegs.push({ leg: legNo, reason: "open position not found" });
+              continue;
+            }
+            if (
+              hasManualTargetEdit({
+                position,
+                expectedStopLoss: extractManagedStopLoss(openLeg, trade),
+                expectedTakeProfit: extractManagedTakeProfit(openLeg, trade, legNo)
+              })
+            ) {
+              skippedLegs.push({ leg: legNo, reason: "manual SL/TP edit detected" });
               continue;
             }
             const moved = await this.moveStopLossToBe({
@@ -684,17 +754,19 @@ export class TradeRuntimeSyncService {
               continue;
             }
             openLeg.currentStopLoss = moved.verifiedStopLoss;
+            openLeg.managedStopLoss = moved.verifiedStopLoss;
             movedLegs.push({ leg: legNo, requestId: legRequestId, newStopLoss: moved.verifiedStopLoss });
           }
 
           finalLegTrail = {
-            status: failedLegs.length === 0 ? "COMPLETED" : movedLegs.length > 0 ? "PARTIAL" : "FAILED",
+            status: failedLegs.length === 0 ? "COMPLETED" : movedLegs.length > 0 || skippedLegs.length > 0 ? "PARTIAL" : "FAILED",
             triggeredAt: new Date().toISOString(),
             sourceLeg: 2,
             sourceClosePrice: leg2ClosePrice,
             targetStopLoss,
             movedLegs,
-            failedLegs
+            failedLegs,
+            skippedLegs
           };
           if (failedLegs.length > 0) {
             nextErrorMessage = "Final leg SL move failed";

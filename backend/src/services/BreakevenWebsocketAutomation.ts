@@ -93,6 +93,37 @@ const extractTakeProfit = (position: GenericObject): number | undefined =>
 const PRICE_VERIFY_TOLERANCE = 0.02;
 const valuesMatch = (expected: number, actual: number | undefined): boolean =>
   actual !== undefined && Math.abs(actual - expected) <= PRICE_VERIFY_TOLERANCE;
+const extractStopLoss = (position: GenericObject): number | undefined =>
+  asNumber(position.stopLoss ?? position.sl);
+const extractManagedStopLoss = (leg: GenericObject, trade: TradeRecord): number | undefined =>
+  asNumber(leg.managedStopLoss) ?? trade.stopLoss;
+const extractManagedTakeProfit = (
+  leg: GenericObject,
+  trade: TradeRecord,
+  legNo?: number
+): number | undefined => {
+  const managed = asNumber(leg.managedTakeProfit ?? leg.takeProfit);
+  if (managed !== undefined) return managed;
+  if (!legNo) return undefined;
+  return asNumber(trade.takeProfits[legNo - 1]);
+};
+const hasManualTargetEdit = (input: {
+  position: GenericObject;
+  expectedStopLoss?: number;
+  expectedTakeProfit?: number;
+}): boolean => {
+  const actualStopLoss = extractStopLoss(input.position);
+  const actualTakeProfit = extractTakeProfit(input.position);
+  const stopLossChanged =
+    input.expectedStopLoss !== undefined &&
+    actualStopLoss !== undefined &&
+    !valuesMatch(input.expectedStopLoss, actualStopLoss);
+  const takeProfitChanged =
+    input.expectedTakeProfit !== undefined &&
+    actualTakeProfit !== undefined &&
+    !valuesMatch(input.expectedTakeProfit, actualTakeProfit);
+  return stopLossChanged || takeProfitChanged;
+};
 const extractOpenTimeMs = (position: GenericObject): number | undefined => {
   const raw = asString(position.openTime ?? position.openedAt ?? position.time);
   if (!raw) return undefined;
@@ -344,6 +375,10 @@ export class BreakevenWebsocketAutomation {
       if (matchedPositionId) {
         usedPositionIds.add(matchedPositionId);
       }
+      const currentStopLoss = matchedPosition ? extractStopLoss(matchedPosition) : undefined;
+      const currentTakeProfit = matchedPosition ? extractTakeProfit(matchedPosition) : undefined;
+      const managedStopLoss = extractManagedStopLoss(leg, trade);
+      const managedTakeProfit = extractManagedTakeProfit(leg, trade, asNumber(leg.leg));
       const historyMatches =
         requestId !== undefined
           ? matchedHistoryEvents.filter((event) => extractRequestId(event) === requestId)
@@ -379,6 +414,10 @@ export class BreakevenWebsocketAutomation {
         ...leg,
         ...(requestId !== undefined ? { requestId } : {}),
         status: normalizedStatus,
+        ...(currentStopLoss !== undefined ? { currentStopLoss } : {}),
+        ...(currentTakeProfit !== undefined ? { currentTakeProfit } : {}),
+        ...(managedStopLoss !== undefined ? { managedStopLoss } : {}),
+        ...(managedTakeProfit !== undefined ? { managedTakeProfit } : {}),
         runtimePayload: {
           matchedOpenPositions: openMatches.slice(0, MAX_TRADE_OPEN_POSITIONS),
           matchedHistoryEvents: historyMatches.slice(-MAX_TRADE_HISTORY_EVENTS)
@@ -405,6 +444,7 @@ export class BreakevenWebsocketAutomation {
     if (openExecutedLegs.length > 0 && asString(signalMagnitudeRebase.status) !== "COMPLETED") {
       const movedLegs: Array<{ leg: number; requestId: number; newStopLoss: number; newTakeProfit: number }> = [];
       const failedLegs: Array<{ leg: number; reason: string }> = [];
+      const skippedLegs: Array<{ leg: number; reason: string }> = [];
       const riskDistance = Math.abs(trade.entry - trade.stopLoss);
 
       for (const leg of openExecutedLegs) {
@@ -428,6 +468,16 @@ export class BreakevenWebsocketAutomation {
           failedLegs.push({ leg: legNo, reason: "open position/openPrice unavailable" });
           continue;
         }
+        if (
+          hasManualTargetEdit({
+            position: openPosition,
+            expectedStopLoss: extractManagedStopLoss(leg, trade),
+            expectedTakeProfit: extractManagedTakeProfit(leg, trade, legNo)
+          })
+        ) {
+          skippedLegs.push({ leg: legNo, reason: "manual SL/TP edit detected" });
+          continue;
+        }
 
         const newTakeProfit = openPrice + (signalTp - trade.entry);
         const newStopLoss = trade.side === "BUY" ? openPrice - riskDistance : openPrice + riskDistance;
@@ -448,6 +498,9 @@ export class BreakevenWebsocketAutomation {
         }
 
         leg.currentStopLoss = modifyResult.verifiedStopLoss;
+        leg.currentTakeProfit = modifyResult.verifiedTakeProfit;
+        leg.managedStopLoss = modifyResult.verifiedStopLoss;
+        leg.managedTakeProfit = modifyResult.verifiedTakeProfit;
         leg.takeProfit = modifyResult.verifiedTakeProfit;
         movedLegs.push({
           leg: legNo,
@@ -457,12 +510,13 @@ export class BreakevenWebsocketAutomation {
         });
       }
 
-      if (movedLegs.length > 0 || failedLegs.length > 0) {
+      if (movedLegs.length > 0 || failedLegs.length > 0 || skippedLegs.length > 0) {
         nextSignalMagnitudeRebase = {
-          status: failedLegs.length === 0 ? "COMPLETED" : movedLegs.length > 0 ? "PARTIAL" : "FAILED",
+          status: failedLegs.length === 0 ? "COMPLETED" : movedLegs.length > 0 || skippedLegs.length > 0 ? "PARTIAL" : "FAILED",
           triggeredAt: new Date().toISOString(),
           movedLegs,
-          failedLegs
+          failedLegs,
+          skippedLegs
         };
         if (failedLegs.length > 0) {
           nextErrorMessage = `Signal magnitude rebase failed for ${failedLegs.length} leg(s)`;
@@ -476,6 +530,7 @@ export class BreakevenWebsocketAutomation {
     if (triggerLeg && breakeven.status !== "COMPLETED") {
       const movedLegs: Array<{ leg: number; positionId: string }> = [];
       const failedLegs: Array<{ leg: number; reason: string }> = [];
+      const skippedLegs: Array<{ leg: number; reason: string }> = [];
 
       for (const leg of normalizedLegs) {
         const legNo = asNumber(leg["leg"]);
@@ -497,6 +552,16 @@ export class BreakevenWebsocketAutomation {
           failedLegs.push({ leg: legNo, reason: "position not currently open" });
           continue;
         }
+        if (
+          hasManualTargetEdit({
+            position: openPosition,
+            expectedStopLoss: extractManagedStopLoss(leg, trade),
+            expectedTakeProfit: extractManagedTakeProfit(leg, trade, legNo)
+          })
+        ) {
+          skippedLegs.push({ leg: legNo, reason: "manual SL/TP edit detected" });
+          continue;
+        }
 
         const positionId = extractPositionId(openPosition);
         if (!positionId) {
@@ -513,6 +578,7 @@ export class BreakevenWebsocketAutomation {
 
         if (modifyResult.ok) {
           leg.currentStopLoss = modifyResult.verifiedStopLoss;
+          leg.managedStopLoss = modifyResult.verifiedStopLoss;
           movedLegs.push({ leg: legNo, positionId });
         } else {
           const reason = modifyResult.verifyDetails
@@ -522,13 +588,14 @@ export class BreakevenWebsocketAutomation {
         }
       }
 
-      if (movedLegs.length > 0 || failedLegs.length > 0) {
+      if (movedLegs.length > 0 || failedLegs.length > 0 || skippedLegs.length > 0) {
         nextBreakeven = {
-          status: failedLegs.length === 0 ? "COMPLETED" : movedLegs.length > 0 ? "PARTIAL" : "FAILED",
+          status: failedLegs.length === 0 ? "COMPLETED" : movedLegs.length > 0 || skippedLegs.length > 0 ? "PARTIAL" : "FAILED",
           ...(triggerRequestId !== undefined ? { triggeredByRequestId: triggerRequestId } : {}),
           triggeredAt: new Date().toISOString(),
           movedLegs,
-          failedLegs
+          failedLegs,
+          skippedLegs
         };
         if (failedLegs.length > 0) {
           nextErrorMessage = `BE move failed for ${failedLegs.length} leg(s)`;
@@ -558,6 +625,7 @@ export class BreakevenWebsocketAutomation {
         const targetStopLoss = trade.entry + (leg2ClosePrice - trade.entry) / 2;
         const movedLegs: Array<{ leg: number; requestId: number; newStopLoss: number }> = [];
         const failedLegs: Array<{ leg: number; reason: string }> = [];
+        const skippedLegs: Array<{ leg: number; reason: string }> = [];
         for (const openLeg of openExecutedLegs) {
           const legNo = asNumber(openLeg.leg);
           const legRequestId = extractRequestId(openLeg);
@@ -570,6 +638,16 @@ export class BreakevenWebsocketAutomation {
             matchedOpenPositions.find((position) => extractRequestId(position) === legRequestId) ?? openLegPosition;
           if (!openPosition) {
             failedLegs.push({ leg: legNo, reason: "open position not found" });
+            continue;
+          }
+          if (
+            hasManualTargetEdit({
+              position: openPosition,
+              expectedStopLoss: extractManagedStopLoss(openLeg, trade),
+              expectedTakeProfit: extractManagedTakeProfit(openLeg, trade, legNo)
+            })
+          ) {
+            skippedLegs.push({ leg: legNo, reason: "manual SL/TP edit detected" });
             continue;
           }
           const moved = await this.modifyPositionStopLossToBreakEven({
@@ -586,17 +664,19 @@ export class BreakevenWebsocketAutomation {
             continue;
           }
           openLeg.currentStopLoss = moved.verifiedStopLoss;
+          openLeg.managedStopLoss = moved.verifiedStopLoss;
           movedLegs.push({ leg: legNo, requestId: legRequestId, newStopLoss: moved.verifiedStopLoss });
         }
 
         nextFinalLegTrail = {
-          status: failedLegs.length === 0 ? "COMPLETED" : movedLegs.length > 0 ? "PARTIAL" : "FAILED",
+          status: failedLegs.length === 0 ? "COMPLETED" : movedLegs.length > 0 || skippedLegs.length > 0 ? "PARTIAL" : "FAILED",
           triggeredAt: new Date().toISOString(),
           sourceLeg: 2,
           sourceClosePrice: leg2ClosePrice,
           targetStopLoss,
           movedLegs,
-          failedLegs
+          failedLegs,
+          skippedLegs
         };
         if (failedLegs.length > 0) {
           nextErrorMessage = "Final leg SL move failed";
