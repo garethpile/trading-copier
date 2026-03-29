@@ -4,6 +4,7 @@
 
 | Date | Update | Author |
 | --- | --- | --- |
+| 2026-03-29 | Updated the architecture document to reflect explicit `risktrades` TP-leg selection and the Telegram `/risktrades` command. | Codex |
 | 2026-03-23 | Created the current-state as-is architecture document for TradingCopier based on the active repository and live deployment shape. | Codex |
 
 ## DEPLOYMENTS
@@ -49,6 +50,7 @@ The active platform covers:
 - Telegram-driven signal intake through a webhook endpoint
 - configurable symbol mapping and lot sizing
 - configurable target account selection for demo and live mode
+- configurable TP-leg selection through `risktrades` values such as `1`, `1,2`, or `1,2,3`
 - multi-leg TP execution against MetaCopier
 - trade history and per-trade inspection
 - manual trade-management preview and apply flows
@@ -126,6 +128,7 @@ Responsibilities:
 
 - validate the structured trade request
 - resolve broker symbol mapping
+- resolve the configured `risktrades` TP-leg subset
 - generate per-leg request IDs
 - submit one MetaCopier trade per TP leg
 - persist combined execution results and high-level status
@@ -147,6 +150,7 @@ Responsibilities:
 - parse signal messages
 - resolve execution mode and target account
 - resolve symbol mapping and lot size before execution
+- expose limited Telegram control commands for execution mode, TP-leg selection, lot override, history, runtime sync, and news feed operations
 - call the execution service with an already-resolved execution request
 - reply back into the Telegram chat with submission and result feedback
 
@@ -234,13 +238,14 @@ Current internal management capabilities include:
 - enable socket feature support
 - read and update lot-size configuration
 - read and update target-account configuration
+- read and update the explicit `risktrades` TP-leg list stored with target-account configuration
 
 ### Telegram Flow
 
 - receive inbound Telegram updates
 - enforce allowed chat and user rules when configured
 - parse and execute supported signal messages
-- serve limited operational commands such as config refresh and mode-aware execution
+- serve limited operational commands such as `/mode`, `/risktrades`, `/lot`, `/history`, `/admin`, `/sync`, and news-feed controls
 
 ### System-To-System Flow
 
@@ -253,9 +258,9 @@ Current internal management capabilities include:
 
 1. A signal arrives from the web UI or Telegram.
 2. The signal is parsed into the internal trade model.
-3. The system resolves execution mode, target account, symbol mapping, and lot size.
+3. The system resolves execution mode, target account, symbol mapping, lot size, and the configured `risktrades` TP-leg list.
 4. The execution service creates a signal record and dedupe lock in DynamoDB.
-5. The execution provider submits one MetaCopier order per TP leg using app-generated request IDs.
+5. The execution provider submits one MetaCopier order only for the selected TP legs using app-generated request IDs.
 6. The system stores per-leg execution IDs, request IDs, and provider responses in the trade record.
 7. Once a live position exists, the runtime applies signal-magnitude rebase so the SL and TP distances match the original signal from the actual fill price.
 8. MetaCopier websocket events update open-position and history snapshots in the ECS worker.

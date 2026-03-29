@@ -42,6 +42,32 @@ const splitCsvSet = (value?: string): Set<string> =>
   );
 
 const normalizeText = (value?: string): string => (value ?? "").trim();
+const normalizeTelegramCommandText = (value?: string): string => {
+  const text = normalizeText(value);
+  if (!text.startsWith("/")) return text;
+  const [commandToken, ...rest] = text.split(/\s+/);
+  const normalizedCommand = commandToken.replace(/@[^\s]+$/, "").toLowerCase();
+  return [normalizedCommand, ...rest].join(" ").trim();
+};
+const normalizeRiskTrades = (value?: string): string => {
+  const normalized = (value ?? "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part === "1" || part === "2" || part === "3")
+    .filter((part, index, arr) => arr.indexOf(part) === index)
+    .sort()
+    .join(",");
+
+  return normalized || "1,2,3";
+};
+const isValidRiskTradesInput = (value?: string): boolean => {
+  const trimmed = (value ?? "").trim();
+  if (!trimmed) return false;
+  return trimmed.split(",").every((part) => {
+    const leg = part.trim();
+    return leg === "1" || leg === "2" || leg === "3";
+  });
+};
 const summarizeRawMessage = (rawMessage: string) => {
   const lines = rawMessage.split(/\r?\n/);
   const nonAscii = Array.from(new Set(
@@ -135,16 +161,50 @@ const getTimings = (providerResponse: unknown): Record<string, number> => {
   return out;
 };
 
-const formatExecutionLegs = (providerResponse: unknown): string[] => {
-  if (!providerResponse || typeof providerResponse !== "object") return [];
-  const legs = (providerResponse as { legs?: unknown }).legs;
-  if (!Array.isArray(legs)) return [];
-  return legs.map((raw) => {
-    const leg = raw as { leg?: number; status?: string; message?: string; executionId?: string; providerResponse?: unknown };
-    const providerTimings = getTimings(leg.providerResponse);
-    const timingSuffix = providerTimings.totalMs !== undefined ? ` [mc=${providerTimings.totalMs}ms]` : "";
-    return `TP${leg.leg ?? "?"}: ${leg.status ?? "UNKNOWN"}${leg.executionId ? ` (${leg.executionId})` : ""} - ${leg.message ?? "-"}${timingSuffix}`;
-  });
+const formatExecutionLegs = (input: {
+  providerResponse: unknown;
+  requestedRiskTrades?: string;
+  totalTakeProfits?: number;
+}): string[] => {
+  const totalTakeProfits = Math.max(0, input.totalTakeProfits ?? 0);
+  const selectedRiskTrades = new Set(
+    normalizeRiskTrades(input.requestedRiskTrades)
+      .split(",")
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value >= 1 && value <= 3)
+  );
+
+  const actualLines: Array<{ legNumber?: number; line: string }> = (() => {
+    if (!input.providerResponse || typeof input.providerResponse !== "object") return [];
+    const legs = (input.providerResponse as { legs?: unknown }).legs;
+    if (!Array.isArray(legs)) return [];
+    return legs.map((raw) => {
+      const leg = raw as { leg?: number; status?: string; message?: string; executionId?: string; providerResponse?: unknown };
+      const providerTimings = getTimings(leg.providerResponse);
+      const timingSuffix = providerTimings.totalMs !== undefined ? ` [mc=${providerTimings.totalMs}ms]` : "";
+      return {
+        legNumber: leg.leg,
+        line: `TP${leg.leg ?? "?"}: ${leg.status ?? "UNKNOWN"}${leg.executionId ? ` (${leg.executionId})` : ""} - ${leg.message ?? "-"}${timingSuffix}`
+      };
+    });
+  })();
+
+  const maxLegNumber = Math.max(totalTakeProfits, ...actualLines.map((entry) => entry.legNumber ?? 0));
+  const linesByLeg = new Map(actualLines.filter((entry) => entry.legNumber).map((entry) => [entry.legNumber as number, entry.line]));
+  const output: string[] = [];
+
+  for (let leg = 1; leg <= maxLegNumber; leg += 1) {
+    const actual = linesByLeg.get(leg);
+    if (actual) {
+      output.push(actual);
+      continue;
+    }
+    if (selectedRiskTrades.size > 0 && !selectedRiskTrades.has(leg)) {
+      output.push(`TP${leg}: IGNORED due to risk setting`);
+    }
+  }
+
+  return output.length > 0 ? output : actualLines.map((entry) => entry.line);
 };
 
 const resolveConfigUserId = (chatId: string): string => process.env.TELEGRAM_CONFIG_USER_ID?.trim() || `telegram:${chatId}`;
@@ -200,7 +260,7 @@ const handleAdmin = async (
     [
       "Admin Summary",
       `Execution mode: ${targetConfig.executionMode ?? "DEMO"}`,
-      `Risk trades: ${targetConfig.riskTrades ?? "all"}`,
+      `Risk trades: ${targetConfig.riskTrades ?? "1,2,3"}`,
       `DEMO account: ${modeAccount(targetConfig, "DEMO") || "-"}`,
       `LIVE account: ${modeAccount(targetConfig, "LIVE") || "-"}`,
       `Default lot: ${lotConfig.defaultLotSize}`,
@@ -246,7 +306,7 @@ const executeParsedTrade = async (input: {
     targetAccount,
     lotSize,
     destinationBrokerSymbol,
-    riskTrades: input.targetConfig.riskTrades ?? "all",
+    riskTrades: input.targetConfig.riskTrades ?? "1,2,3",
     mode,
     sourceMessageId: input.updateId !== undefined ? String(input.updateId) : undefined,
     receivedAt: new Date().toISOString()
@@ -286,7 +346,11 @@ const executeParsedTrade = async (input: {
     const executeMs = Date.now() - executeStartedAt;
     const providerResponse = (result as { providerResponse?: unknown }).providerResponse;
     const timingBreakdown = getTimings(providerResponse);
-    const legLines = formatExecutionLegs(providerResponse);
+    const legLines = formatExecutionLegs({
+      providerResponse,
+      requestedRiskTrades: input.targetConfig.riskTrades ?? "1,2,3",
+      totalTakeProfits: input.parsedTrade.takeProfits.length,
+    });
 
     const totalMs = Date.now() - startedAt;
     const replyStartedAt = Date.now();
@@ -369,7 +433,8 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const repository = new TradeRepository(tableName);
   const update = event.body ? (JSON.parse(event.body) as TelegramUpdate) : {};
   const updateId = typeof update.update_id === "number" ? update.update_id : undefined;
-  const text = normalizeText(update.message?.text);
+  const rawText = normalizeText(update.message?.text);
+  const text = normalizeTelegramCommandText(rawText);
   const caption = normalizeText(update.message?.caption);
   const chatId = String(update.message?.chat?.id ?? "");
   const fromUserId = update.message?.from?.id !== undefined ? String(update.message.from.id) : undefined;
@@ -416,11 +481,11 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         "Trading Copier Bot ready.",
         "Paste a signal and it will execute immediately.",
         `Mode: ${targetConfig.executionMode ?? "DEMO"}`,
-        `Risk trades: ${targetConfig.riskTrades ?? "all"}`,
+        `Risk trades: ${targetConfig.riskTrades ?? "1,2,3"}`,
         `DEMO account: ${modeAccount(targetConfig, "DEMO") || "-"}`,
         `LIVE account: ${modeAccount(targetConfig, "LIVE") || "-"}`,
         `Lot override: ${profile?.lotOverride ?? "none"}`,
-        "Commands: /mode demo, /mode live, /lot <size>, /lot reset, /history, /admin, /news, /news poll, /news pause, /news resume",
+        "Commands: /mode demo, /mode live, /risktrades 1,2,3, /lot <size>, /lot reset, /history, /admin, /news, /news poll, /news pause, /news resume",
         `Loaded symbols: ${Object.keys(lotConfig.symbols).length}`
       ].join("\n")
     );
@@ -483,7 +548,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         "Metadata refreshed.",
         `Loaded symbols: ${Object.keys(refreshed.lotConfig.symbols).length}`,
         `Execution mode: ${refreshed.targetConfig.executionMode ?? "DEMO"}`,
-        `Risk trades: ${refreshed.targetConfig.riskTrades ?? "all"}`,
+        `Risk trades: ${refreshed.targetConfig.riskTrades ?? "1,2,3"}`,
         `DEMO account: ${modeAccount(refreshed.targetConfig, "DEMO") || "-"}`,
         `LIVE account: ${modeAccount(refreshed.targetConfig, "LIVE") || "-"}`,
         `Load time: ${Date.now() - refreshStartedAt}ms`
@@ -539,6 +604,56 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       `Execution mode set to ${nextMode}. Active account: ${modeAccount(nextConfig, nextMode) || "-"}`
     );
     return jsonResponse(200, { ok: true });
+  }
+
+  if (text.startsWith("/risktrades") || text.startsWith("/traderisk")) {
+    const commandPrefix = text.startsWith("/traderisk") ? "/traderisk" : "/risktrades";
+    const rawRiskTrades = text.slice(commandPrefix.length).trim();
+    if (!rawRiskTrades) {
+      await sendTelegramMessage(
+        botToken,
+        chatId,
+        `Current risk trades: ${targetConfig.riskTrades ?? "1,2,3"}\nUsage: /risktrades 1,2,3`
+      );
+      return jsonResponse(200, { ok: true });
+    }
+
+    if (!isValidRiskTradesInput(rawRiskTrades)) {
+      await sendTelegramMessage(
+        botToken,
+        chatId,
+        "Usage: /risktrades 1,2,3\nAllowed values are comma-separated leg numbers using only 1, 2, and 3."
+      );
+      return jsonResponse(200, { ok: true });
+    }
+
+    const nextRiskTrades = normalizeRiskTrades(rawRiskTrades);
+    const nextConfig: TargetAccountsConfig = {
+      ...targetConfig,
+      riskTrades: nextRiskTrades,
+      updatedAt: new Date().toISOString()
+    };
+    await repository.putTargetAccountsConfig(configUserId, nextConfig);
+    telegramConfigCache.set(configUserId, Promise.resolve({
+      lotConfig,
+      targetConfig: nextConfig,
+      loadedAtMs: Date.now()
+    }));
+    await sendTelegramMessage(
+      botToken,
+      chatId,
+      `Risk trades set to ${nextRiskTrades}. Only those TP legs will be placed.`
+    );
+    return jsonResponse(200, { ok: true });
+  }
+
+  if (rawText.startsWith("/") && !text.startsWith("/tradelog")) {
+    await sendTelegramMessage(
+      botToken,
+      chatId,
+      "Unknown command. Try /risktrades 1,2,3, /mode demo, /mode live, /lot <size>, /history, /admin, or /news."
+    );
+    return jsonResponse(200, { ok: true, unknownCommand: true });
   }
 
   const currentDraft = await repository.getTelegramDraft(chatId);
