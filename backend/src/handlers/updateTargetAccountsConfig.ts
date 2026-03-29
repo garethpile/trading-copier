@@ -4,6 +4,19 @@ import { TradeRepository } from "../repositories/TradeRepository";
 import { getUserIdFromEvent } from "../utils/auth";
 import { jsonResponse } from "../utils/http";
 
+const normalizeRiskTrades = (value: unknown): string => {
+  if (typeof value !== "string") return "1,2,3";
+  const normalized = value
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part === "1" || part === "2" || part === "3")
+    .filter((part, index, arr) => arr.indexOf(part) === index)
+    .sort()
+    .join(",");
+
+  return normalized || "1,2,3";
+};
+
 export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   try {
     const tableName = process.env.TRADE_SIGNALS_TABLE;
@@ -42,9 +55,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       modeAccountsInput.LIVE && unique.includes(String(modeAccountsInput.LIVE))
         ? String(modeAccountsInput.LIVE)
         : unique[1] ?? unique[0];
-    const riskTrades = body.riskTrades === "1" || body.riskTrades === "2" || body.riskTrades === "all"
-      ? body.riskTrades
-      : "all";
+    const riskTrades = normalizeRiskTrades(body.riskTrades);
 
     const repository = new TradeRepository(tableName);
     const next: TargetAccountsConfig = {

@@ -79,7 +79,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
     const result = await service.execute(userId, {
       ...body,
-      riskTrades: accountConfig.riskTrades ?? "all"
+      riskTrades: accountConfig.riskTrades ?? "1,2,3"
     }, parseResult.warnings);
     return jsonResponse(result.status === "EXECUTED" ? 200 : 502, result);
   } catch (error) {

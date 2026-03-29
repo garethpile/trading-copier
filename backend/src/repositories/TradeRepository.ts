@@ -12,6 +12,7 @@ import {
 } from "@aws-sdk/lib-dynamodb";
 import {
   LotSizeConfig,
+  RiskTradeLeg,
   RiskTradesMode,
   SymbolConfig,
   TelegramProfile,
@@ -23,6 +24,20 @@ import {
 import { DEFAULT_FALLBACK_LOT_SIZE, DEFAULT_SYMBOL_CONFIGS } from "../services/lotSizeDefaults";
 
 const normalizeSymbol = (value: string): string => value.trim().toUpperCase();
+
+const normalizeRiskTrades = (value: unknown): RiskTradesMode => {
+  if (typeof value !== "string") return "1,2,3";
+  const allowed = new Set<RiskTradeLeg>(["1", "2", "3"]);
+  const normalized = value
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part): part is RiskTradeLeg => allowed.has(part as RiskTradeLeg))
+    .filter((part, index, arr) => arr.indexOf(part) === index)
+    .sort()
+    .join(",");
+
+  return normalized || "1,2,3";
+};
 
 const toSymbolConfig = (symbol: string, value: unknown): SymbolConfig | undefined => {
   if (typeof value === "number" && Number.isFinite(value)) {
@@ -338,7 +353,7 @@ export class TradeRepository {
           DEMO: fallbackAccounts[0],
           LIVE: fallbackAccounts[1] ?? fallbackAccounts[0]
         },
-        riskTrades: "all"
+        riskTrades: "1,2,3"
       };
     }
 
@@ -347,10 +362,7 @@ export class TradeRepository {
     const demoAccount = modeAccounts.DEMO && accounts.includes(modeAccounts.DEMO) ? modeAccounts.DEMO : accounts[0];
     const liveCandidate = modeAccounts.LIVE && accounts.includes(modeAccounts.LIVE) ? modeAccounts.LIVE : accounts[1] ?? accounts[0];
     const executionMode = item.executionMode === "LIVE" ? "LIVE" : "DEMO";
-    const riskTrades: RiskTradesMode =
-      item.riskTrades === "1" || item.riskTrades === "2" || item.riskTrades === "all"
-        ? item.riskTrades
-        : "all";
+    const riskTrades = normalizeRiskTrades(item.riskTrades);
 
     return {
       accounts,
@@ -379,7 +391,7 @@ export class TradeRepository {
           accounts: config.accounts,
           executionMode: config.executionMode ?? "DEMO",
           modeAccounts: config.modeAccounts ?? {},
-          riskTrades: config.riskTrades ?? "all",
+          riskTrades: normalizeRiskTrades(config.riskTrades),
           updatedAt: config.updatedAt ?? new Date().toISOString()
         }
       })

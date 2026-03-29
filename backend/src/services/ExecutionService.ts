@@ -1,6 +1,6 @@
 import { buildExecutionProvider } from "../providers/ExecutionProviderFactory";
 import { TradeRepository, DuplicateTradeError } from "../repositories/TradeRepository";
-import { ExecuteTradeRequest, ExecuteTradeResolvedRequest, RiskTradesMode, TradeRecord } from "../models/types";
+import { ExecuteTradeRequest, ExecuteTradeResolvedRequest, RiskTradeLeg, RiskTradesMode, TradeRecord } from "../models/types";
 import { TradeRuntimeSyncService } from "./TradeRuntimeSyncService";
 import { makeDedupeKey, makeSignalId } from "../utils/ids";
 
@@ -22,13 +22,20 @@ const selectRiskTradeLegs = (
     .map((takeProfit, index) => ({ leg: index + 1, takeProfit }))
     .filter(({ takeProfit }) => Number.isFinite(takeProfit) && takeProfit > 0);
 
-  if (riskTrades === "1") {
-    return validLegs.filter(({ leg }) => leg === 2);
+  const selectedLegs = new Set(
+    (riskTrades ?? "1,2,3")
+      .split(",")
+      .map((part) => part.trim())
+      .filter((part): part is RiskTradeLeg => part === "1" || part === "2" || part === "3")
+  );
+
+  if (selectedLegs.size === 0) {
+    selectedLegs.add("1");
+    selectedLegs.add("2");
+    selectedLegs.add("3");
   }
-  if (riskTrades === "2") {
-    return validLegs.filter(({ leg }) => leg === 1 || leg === 2);
-  }
-  return validLegs;
+
+  return validLegs.filter(({ leg }) => selectedLegs.has(String(leg) as RiskTradeLeg));
 };
 
 export class ExecutionService {
@@ -116,8 +123,8 @@ export class ExecutionService {
         status: "FAILED" as const,
         signalId,
         provider: "MetaCopier",
-        message: `No TP legs available for riskTrades=${req.riskTrades ?? "all"}`,
-        errors: [`No TP legs available for riskTrades=${req.riskTrades ?? "all"}`]
+        message: `No TP legs available for riskTrades=${req.riskTrades ?? "1,2,3"}`,
+        errors: [`No TP legs available for riskTrades=${req.riskTrades ?? "1,2,3"}`]
       };
     }
     const dedupeKey = req.dedupeKey ?? makeDedupeKey({
@@ -181,7 +188,7 @@ export class ExecutionService {
       mode: "MULTI_TP_LEGS",
       destinationBrokerSymbol,
       legs: legResults,
-      riskTrades: req.riskTrades ?? "all",
+      riskTrades: req.riskTrades ?? "1,2,3",
       timings: {
         dedupeMs,
         createTradeMs,

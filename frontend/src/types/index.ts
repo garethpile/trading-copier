@@ -92,6 +92,6 @@ export interface TargetAccountsConfig {
   accounts: string[];
   executionMode?: "DEMO" | "LIVE";
   modeAccounts?: Partial<Record<"DEMO" | "LIVE", string>>;
-  riskTrades?: "1" | "2" | "all";
+  riskTrades?: string;
   updatedAt?: string;
 }

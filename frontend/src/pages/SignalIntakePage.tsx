@@ -13,6 +13,7 @@ const fallbackAccounts = (
   .filter(Boolean);
 
 const defaultLotSize = Number(import.meta.env.VITE_DEFAULT_LOT_SIZE ?? "0.01");
+const formatRiskTrades = (value?: string): string => value?.trim() || "1,2,3";
 
 export function SignalIntakePage() {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -22,7 +23,7 @@ export function SignalIntakePage() {
   const [accounts, setAccounts] = useState<string[]>(fallbackAccounts);
   const [modeAccounts, setModeAccounts] = useState<Partial<Record<"DEMO" | "LIVE", string>>>({});
   const [executionMode, setExecutionMode] = useState<"DEMO" | "LIVE">("DEMO");
-  const [riskTrades, setRiskTrades] = useState<"1" | "2" | "all">("all");
+  const [riskTrades, setRiskTrades] = useState("1,2,3");
   const [lotSize, setLotSize] = useState(defaultLotSize);
   const [lotSizeConfig, setLotSizeConfig] = useState<{ defaultLotSize: number; symbols: Record<string, { lotSize: number; destinationBrokerSymbol: string }> }>({
     defaultLotSize,
@@ -52,7 +53,7 @@ export function SignalIntakePage() {
           setAccounts(config.accounts);
           setModeAccounts(config.modeAccounts ?? {});
           setExecutionMode(config.executionMode ?? "DEMO");
-          setRiskTrades(config.riskTrades ?? "all");
+          setRiskTrades(formatRiskTrades(config.riskTrades));
         }
       })
       .catch(() => undefined);
@@ -135,7 +136,7 @@ export function SignalIntakePage() {
           <label style={{ minWidth: 220 }}>
             Risk Trades
             <input
-              value={riskTrades === "1" ? "Trade 2 only" : riskTrades === "2" ? "Trades 1 and 2" : "All 3 trades"}
+              value={formatRiskTrades(riskTrades)}
               readOnly
             />
           </label>

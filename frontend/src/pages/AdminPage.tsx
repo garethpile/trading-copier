@@ -22,6 +22,18 @@ const sortSymbolConfigs = (input: Record<string, SymbolConfig>): Record<string, 
 const resolveAccountMapping = (symbolConfig: SymbolConfig, accountId: string, sourceSymbol: string): string =>
   symbolConfig.accountDestinationSymbols?.[accountId] ?? symbolConfig.destinationBrokerSymbol ?? sourceSymbol;
 
+const normalizeRiskTrades = (value?: string): string => {
+  const normalized = (value ?? "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter((part) => part === "1" || part === "2" || part === "3")
+    .filter((part, index, arr) => arr.indexOf(part) === index)
+    .sort()
+    .join(",");
+
+  return normalized || "1,2,3";
+};
+
 function CollapsibleCard({
   title,
   children,
@@ -62,7 +74,7 @@ export function AdminPage() {
   const [loading, setLoading] = useState(false);
 
   const executionMode = accountsConfig?.executionMode ?? "DEMO";
-  const riskTrades = accountsConfig?.riskTrades ?? "all";
+  const riskTrades = accountsConfig?.riskTrades ?? "1,2,3";
   const statusClass = (value: string) =>
     value === "OK" || value === "SUCCESS" || value === "ENABLED" ? "status-ok" : "status-bad";
 
@@ -340,23 +352,20 @@ export function AdminPage() {
 
               <label>
                 Risk Trades
-                <select
+                <input
                   value={riskTrades}
                   onChange={(e) =>
                     setAccountsConfig((prev) =>
                       prev
                         ? {
                             ...prev,
-                            riskTrades: e.target.value === "1" || e.target.value === "2" ? e.target.value : "all"
+                            riskTrades: e.target.value
                           }
                         : prev
                     )
                   }
-                >
-                  <option value="1">1: place trade 2 only</option>
-                  <option value="2">2: place trades 1 and 2</option>
-                  <option value="all">all: place trades 1, 2 and 3</option>
-                </select>
+                  placeholder="1,2,3"
+                />
               </label>
 
               <button
@@ -369,10 +378,13 @@ export function AdminPage() {
                     setLoading(true);
                     setManagementError(undefined);
                     setManagementMessage(undefined);
-                    const saved = await updateTargetAccountsConfig(accountsConfig);
+                    const saved = await updateTargetAccountsConfig({
+                      ...accountsConfig,
+                      riskTrades: normalizeRiskTrades(accountsConfig.riskTrades)
+                    });
                     setAccountsConfig(saved);
                     setManagementMessage(
-                      `Target accounts saved. Mode: ${saved.executionMode ?? "DEMO"}, riskTrades: ${saved.riskTrades ?? "all"}`
+                      `Target accounts saved. Mode: ${saved.executionMode ?? "DEMO"}, riskTrades: ${normalizeRiskTrades(saved.riskTrades)}`
                     );
                     await Promise.all(saved.accounts.map((accountId) => refreshSocketStatus(accountId)));
                   } catch (error) {
