@@ -7,3 +7,6 @@ frontend/dist/
 backend/dist/
 infra/cdk/dist/
 cdk.out/
+
+backend/.lambda-package/
+backend/telegram-webhook-update.zip
