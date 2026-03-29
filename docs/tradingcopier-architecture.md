@@ -24,6 +24,10 @@ Active stack names to check in AWS CloudFormation for the live environment:
 
 This document describes the current-state architecture of TradingCopier.
 
+> **Live AWS region:** `eu-west-1`
+> 
+> TradingCopier production state, including the live `TradeSignals` DynamoDB table checked for execution records, currently runs in AWS region `eu-west-1`.
+
 TradingCopier is a signal-intake and trade-execution platform where:
 
 - a trade signal is received from the web UI or Telegram
