@@ -20,6 +20,7 @@ XAUUSD | SELL 5102
   assert.deepEqual(result.trade, {
     symbol: "XAUUSD",
     side: "SELL",
+    orderType: "MARKET",
     entry: 5102,
     stopLoss: 5110,
     takeProfits: [5094, 5088, 5075],

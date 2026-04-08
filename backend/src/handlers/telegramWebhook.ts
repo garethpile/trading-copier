@@ -49,6 +49,8 @@ const normalizeTelegramCommandText = (value?: string): string => {
   const normalizedCommand = commandToken.replace(/@[^\s]+$/, "").toLowerCase();
   return [normalizedCommand, ...rest].join(" ").trim();
 };
+export const resolveTelegramSignalText = (value: { text?: string; caption?: string }): string =>
+  normalizeTelegramCommandText(value.text) || normalizeText(value.caption);
 const normalizeRiskTrades = (value?: string): string => {
   const normalized = (value ?? "")
     .split(",")
@@ -436,6 +438,10 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   const rawText = normalizeText(update.message?.text);
   const text = normalizeTelegramCommandText(rawText);
   const caption = normalizeText(update.message?.caption);
+  const signalText = resolveTelegramSignalText({
+    text: update.message?.text,
+    caption: update.message?.caption
+  });
   const chatId = String(update.message?.chat?.id ?? "");
   const fromUserId = update.message?.from?.id !== undefined ? String(update.message.from.id) : undefined;
   if (!chatId || (!text && !caption && !update.message?.photo?.length && !update.message?.document?.file_id)) {
@@ -701,14 +707,14 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return jsonResponse(200, { ok: true });
   }
 
-  const parsed = parseSignal(text);
+  const parsed = parseSignal(signalText);
   if (!parsed.valid || !parsed.trade) {
     console.error("telegramWebhook parse failed", {
       chatId,
       updateId,
       errors: parsed.errors,
       warnings: parsed.warnings,
-      rawSummary: summarizeRawMessage(text)
+      rawSummary: summarizeRawMessage(signalText)
     });
     await sendTelegramMessage(botToken, chatId, `Parse failed:\n${parsed.errors.join("\n")}`);
     return jsonResponse(200, { ok: true });
