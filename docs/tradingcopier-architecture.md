@@ -4,6 +4,7 @@
 
 | Date | Update | Author |
 | --- | --- | --- |
+| 2026-04-14 | Added Telegram-only `/mode test` dry-run behavior, documented caption normalization before parsing, and documented that Lambda deploys from compiled `backend/dist`, not `backend/src`. | Codex |
 | 2026-03-29 | Updated the architecture document to reflect explicit `risktrades` TP-leg selection and the Telegram `/risktrades` command. | Codex |
 | 2026-03-23 | Created the current-state as-is architecture document for TradingCopier based on the active repository and live deployment shape. | Codex |
 
@@ -147,10 +148,11 @@ Telegram intake runs through `TelegramWebhookFn`.
 Responsibilities:
 
 - receive Telegram webhook updates from Telegram
+- normalize Telegram text and photo captions into parser-compatible trade lines before parsing
 - parse signal messages
 - resolve execution mode and target account
 - resolve symbol mapping and lot size before execution
-- expose limited Telegram control commands for execution mode, TP-leg selection, lot override, history, runtime sync, and news feed operations
+- expose limited Telegram control commands for execution mode, dry-run test mode, TP-leg selection, lot override, history, runtime sync, and news feed operations
 - call the execution service with an already-resolved execution request
 - reply back into the Telegram chat with submission and result feedback
 
@@ -158,6 +160,12 @@ Current optimization:
 
 - lot-size and target-account config bundles are cached in warm Lambda memory by `configUserId`
 - `/metadatarefresh` forces a config reload in the webhook runtime
+- Telegram photo-caption intake strips non-signal commentary, normalizes `Stop Loss` to `SL`, removes decorative emoji/pip suffix noise, and preserves the parser-required `SYMBOL | BUY/SELL entry` delimiter format
+- Telegram `/mode test` is a chat-level dry-run override: it resolves symbol, lot, target account, and TP-leg selection exactly like a live submission but stops before `ExecutionService` calls MetaCopier
+
+Deployment note:
+
+- the production Telegram webhook Lambda is packaged from compiled backend output at `backend/dist`; changes under `backend/src` do not reach Lambda until the backend is rebuilt before CDK deploy
 
 ### Live Management Runtime
 
@@ -245,7 +253,7 @@ Current internal management capabilities include:
 - receive inbound Telegram updates
 - enforce allowed chat and user rules when configured
 - parse and execute supported signal messages
-- serve limited operational commands such as `/mode`, `/risktrades`, `/lot`, `/history`, `/admin`, `/sync`, and news-feed controls
+- serve limited operational commands such as `/mode`, `/mode test`, `/risktrades`, `/lot`, `/history`, `/admin`, `/sync`, and news-feed controls
 
 ### System-To-System Flow
 
@@ -257,17 +265,18 @@ Current internal management capabilities include:
 ## Canonical Runtime Flow
 
 1. A signal arrives from the web UI or Telegram.
-2. The signal is parsed into the internal trade model.
-3. The system resolves execution mode, target account, symbol mapping, lot size, and the configured `risktrades` TP-leg list.
-4. The execution service creates a signal record and dedupe lock in DynamoDB.
-5. The execution provider submits one MetaCopier order only for the selected TP legs using app-generated request IDs.
-6. The system stores per-leg execution IDs, request IDs, and provider responses in the trade record.
-7. Once a live position exists, the runtime applies signal-magnitude rebase so the SL and TP distances match the original signal from the actual fill price.
-8. MetaCopier websocket events update open-position and history snapshots in the ECS worker.
-9. When TP1 is confirmed by matching close evidence, the worker moves the remaining open legs to break-even.
-10. When TP2 is confirmed by matching close evidence, the worker moves the final open leg stop according to the configured final-leg logic.
-11. DynamoDB is updated only when runtime state, management state, or error state materially changes.
-12. Operators can inspect the resulting trade state through the history and trade-detail APIs.
+2. For Telegram intake, the webhook normalizes text or photo captions into parser-compatible trade lines.
+3. The normalized signal is parsed into the internal trade model.
+4. The system resolves execution mode, target account, symbol mapping, lot size, and the configured `risktrades` TP-leg list.
+5. The execution service creates a signal record and dedupe lock in DynamoDB.
+6. The execution provider submits one MetaCopier order only for the selected TP legs using app-generated request IDs.
+7. The system stores per-leg execution IDs, request IDs, and provider responses in the trade record.
+8. Once a live position exists, the runtime applies signal-magnitude rebase so the SL and TP distances match the original signal from the actual fill price.
+9. MetaCopier websocket events update open-position and history snapshots in the ECS worker.
+10. When TP1 is confirmed by matching close evidence, the worker moves the remaining open legs to break-even.
+11. When TP2 is confirmed by matching close evidence, the worker moves the final open leg stop according to the configured final-leg logic.
+12. DynamoDB is updated only when runtime state, management state, or error state materially changes.
+13. Operators can inspect the resulting trade state through the history and trade-detail APIs.
 
 ## Current Reusable Assets
 

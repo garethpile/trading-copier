@@ -1,5 +1,5 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ExecuteTradeResolvedRequest, ExecutionMode, LotSizeConfig, ParsedTrade, TargetAccountsConfig } from "../models/types";
+import { ExecuteTradeResolvedRequest, ExecutionMode, LotSizeConfig, ParsedTrade, TargetAccountsConfig, TelegramExecutionMode, TelegramProfile } from "../models/types";
 import { parseSignal } from "../parsers/signalParser";
 import { TradeRepository } from "../repositories/TradeRepository";
 import { ExecutionService, DuplicateTradeError } from "../services/ExecutionService";
@@ -49,8 +49,24 @@ const normalizeTelegramCommandText = (value?: string): string => {
   const normalizedCommand = commandToken.replace(/@[^\s]+$/, "").toLowerCase();
   return [normalizedCommand, ...rest].join(" ").trim();
 };
+const stripTelegramSignalNoise = (input?: string): string => {
+  const text = normalizeText(input);
+  if (!text) return "";
+
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^[A-Z0-9]{3,10}\s*\|\s*potential\s+/i.test(line))
+    .map((line) => line.replace(/^([A-Z0-9]{3,10})\s*\|\s*(BUY|SELL)\b/i, "$1 | $2"))
+    .map((line) => line.replace(/\((?:[^()]|\([^()]*\))*\)\s*$/g, "").trim())
+    .map((line) => line.replace(/^[^A-Z0-9]*(TP\d*\s*:?\s*\d)/i, "$1"))
+    .map((line) => line.replace(/^[^A-Z0-9]*(SL|STOP\s*LOSS)\s*:?\s*/i, "SL "))
+    .join("\n");
+};
+
 export const resolveTelegramSignalText = (value: { text?: string; caption?: string }): string =>
-  normalizeTelegramCommandText(value.text) || normalizeText(value.caption);
+  stripTelegramSignalNoise(normalizeTelegramCommandText(value.text) || value.caption);
 const normalizeRiskTrades = (value?: string): string => {
   const normalized = (value ?? "")
     .split(",")
@@ -148,6 +164,32 @@ const modeAccount = (config: TargetAccountsConfig, mode: ExecutionMode): string 
   if (mapped && config.accounts.includes(mapped)) return mapped;
   if (mode === "LIVE") return config.accounts[1] ?? config.accounts[0] ?? "";
   return config.accounts[0] ?? "";
+};
+
+export const resolveTelegramExecutionMode = (
+  profile: Pick<TelegramProfile, "executionMode"> | undefined,
+  targetConfig: Pick<TargetAccountsConfig, "executionMode">
+): TelegramExecutionMode => profile?.executionMode ?? targetConfig.executionMode ?? "DEMO";
+
+const resolveExecutionTargetAccount = (config: TargetAccountsConfig, mode: TelegramExecutionMode): string => {
+  if (mode === "TEST") {
+    return modeAccount(config, "LIVE") || modeAccount(config, "DEMO");
+  }
+  return modeAccount(config, mode);
+};
+
+const selectedRiskTradeLegs = (takeProfits: number[], riskTrades?: string): Array<{ leg: number; takeProfit: number }> => {
+  const selectedLegs = new Set(
+    normalizeRiskTrades(riskTrades)
+      .split(",")
+      .map((part) => part.trim())
+      .filter((part) => part === "1" || part === "2" || part === "3")
+      .map((part) => Number(part))
+  );
+
+  return takeProfits
+    .map((takeProfit, index) => ({ leg: index + 1, takeProfit }))
+    .filter(({ leg, takeProfit }) => Number.isFinite(takeProfit) && takeProfit > 0 && selectedLegs.has(leg));
 };
 
 const getTimings = (providerResponse: unknown): Record<string, number> => {
@@ -253,18 +295,22 @@ const handleAdmin = async (
   repository: TradeRepository,
   botToken: string,
   chatId: string,
-  configUserId: string
+  configUserId: string,
+  profile?: TelegramProfile
 ): Promise<void> => {
   const { lotConfig, targetConfig } = await getTelegramConfigBundle(repository, configUserId);
+  const telegramMode = resolveTelegramExecutionMode(profile, targetConfig);
   await sendTelegramMessage(
     botToken,
     chatId,
     [
       "Admin Summary",
-      `Execution mode: ${targetConfig.executionMode ?? "DEMO"}`,
+      `Telegram mode: ${telegramMode}`,
+      `Default mode: ${targetConfig.executionMode ?? "DEMO"}`,
       `Risk trades: ${targetConfig.riskTrades ?? "1,2,3"}`,
       `DEMO account: ${modeAccount(targetConfig, "DEMO") || "-"}`,
       `LIVE account: ${modeAccount(targetConfig, "LIVE") || "-"}`,
+      `Test mode target: ${resolveExecutionTargetAccount(targetConfig, "TEST") || "-"}`,
       `Default lot: ${lotConfig.defaultLotSize}`,
       `Configured symbols: ${Object.keys(lotConfig.symbols).length}`,
       "Use Web UI for full config updates."
@@ -282,12 +328,13 @@ const executeParsedTrade = async (input: {
   parseWarnings: string[];
   lotConfig: LotSizeConfig;
   targetConfig: TargetAccountsConfig;
+  executionMode: TelegramExecutionMode;
   lotOverride?: number;
   updateId?: number;
 }) => {
   const startedAt = Date.now();
-  const mode = input.targetConfig.executionMode ?? "DEMO";
-  const targetAccount = modeAccount(input.targetConfig, mode);
+  const mode = input.executionMode;
+  const targetAccount = resolveExecutionTargetAccount(input.targetConfig, mode);
   const modeResolvedMs = Date.now() - startedAt;
 
   if (!targetAccount) {
@@ -309,7 +356,7 @@ const executeParsedTrade = async (input: {
     lotSize,
     destinationBrokerSymbol,
     riskTrades: input.targetConfig.riskTrades ?? "1,2,3",
-    mode,
+    ...(mode === "TEST" ? {} : { mode }),
     sourceMessageId: input.updateId !== undefined ? String(input.updateId) : undefined,
     receivedAt: new Date().toISOString()
   };
@@ -326,12 +373,14 @@ const executeParsedTrade = async (input: {
     return;
   }
 
+  const selectedLegs = selectedRiskTradeLegs(input.parsedTrade.takeProfits, input.targetConfig.riskTrades);
+
   const ackStartedAt = Date.now();
   await sendTelegramMessage(
     input.botToken,
     input.chatId,
     [
-      "Submitting trade...",
+      mode === "TEST" ? "Simulating trade (TEST mode)..." : "Submitting trade...",
       `Mode: ${mode}`,
       `Symbol: ${symbol} -> ${destinationBrokerSymbol}`,
       `Account: ${targetAccount}`,
@@ -339,6 +388,27 @@ const executeParsedTrade = async (input: {
     ].join("\n")
   );
   const ackMs = Date.now() - ackStartedAt;
+
+  if (mode === "TEST") {
+    const totalMs = Date.now() - startedAt;
+    await sendTelegramMessage(
+      input.botToken,
+      input.chatId,
+      [
+        "TEST MODE - no trade was submitted.",
+        `Mode: ${mode}`,
+        `Symbol: ${symbol} -> ${destinationBrokerSymbol}`,
+        `Account that would be used: ${targetAccount}`,
+        `Lot: ${lotSize}`,
+        `Risk trades: ${input.targetConfig.riskTrades ?? "1,2,3"}`,
+        ...(selectedLegs.length > 0 ? ["Selected legs:", ...selectedLegs.map((leg) => `TP${leg.leg}: ${leg.takeProfit}`)] : []),
+        ...(input.parseWarnings.length > 0 ? ["Parse warnings:", ...input.parseWarnings] : []),
+        `Elapsed: ${totalMs}ms`,
+        `Stage timings: mode=${modeResolvedMs}ms build=${requestBuildMs}ms validate=${validationMs}ms ack=${ackMs}ms`
+      ].join("\n")
+    );
+    return;
+  }
 
   const executionService = new ExecutionService(input.repository);
   const executeStartedAt = Date.now();
@@ -486,12 +556,13 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       [
         "Trading Copier Bot ready.",
         "Paste a signal and it will execute immediately.",
-        `Mode: ${targetConfig.executionMode ?? "DEMO"}`,
+        `Mode: ${resolveTelegramExecutionMode(profile, targetConfig)}`,
         `Risk trades: ${targetConfig.riskTrades ?? "1,2,3"}`,
         `DEMO account: ${modeAccount(targetConfig, "DEMO") || "-"}`,
         `LIVE account: ${modeAccount(targetConfig, "LIVE") || "-"}`,
+        `Test mode target: ${resolveExecutionTargetAccount(targetConfig, "TEST") || "-"}`,
         `Lot override: ${profile?.lotOverride ?? "none"}`,
-        "Commands: /mode demo, /mode live, /risktrades 1,2,3, /lot <size>, /lot reset, /history, /admin, /news, /news poll, /news pause, /news resume",
+        "Commands: /mode demo, /mode live, /mode test, /risktrades 1,2,3, /lot <size>, /lot reset, /history, /admin, /news, /news poll, /news pause, /news resume",
         `Loaded symbols: ${Object.keys(lotConfig.symbols).length}`
       ].join("\n")
     );
@@ -540,7 +611,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
   }
 
   if (text === "/admin") {
-    await handleAdmin(repository, botToken, chatId, configUserId);
+    await handleAdmin(repository, botToken, chatId, configUserId, profile);
     return jsonResponse(200, { ok: true });
   }
 
@@ -553,10 +624,11 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       [
         "Metadata refreshed.",
         `Loaded symbols: ${Object.keys(refreshed.lotConfig.symbols).length}`,
-        `Execution mode: ${refreshed.targetConfig.executionMode ?? "DEMO"}`,
+        `Execution mode: ${resolveTelegramExecutionMode(profile, refreshed.targetConfig)}`,
         `Risk trades: ${refreshed.targetConfig.riskTrades ?? "1,2,3"}`,
         `DEMO account: ${modeAccount(refreshed.targetConfig, "DEMO") || "-"}`,
         `LIVE account: ${modeAccount(refreshed.targetConfig, "LIVE") || "-"}`,
+        `Test mode target: ${resolveExecutionTargetAccount(refreshed.targetConfig, "TEST") || "-"}`,
         `Load time: ${Date.now() - refreshStartedAt}ms`
       ].join("\n")
     );
@@ -588,26 +660,25 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
 
   if (text.startsWith("/mode")) {
     const modeArg = text.split(/\s+/)[1]?.toUpperCase();
-    if (modeArg !== "DEMO" && modeArg !== "LIVE") {
-      await sendTelegramMessage(botToken, chatId, "Usage: /mode demo OR /mode live");
+    if (modeArg !== "DEMO" && modeArg !== "LIVE" && modeArg !== "TEST") {
+      await sendTelegramMessage(botToken, chatId, "Usage: /mode demo OR /mode live OR /mode test");
       return jsonResponse(200, { ok: true });
     }
-    const nextMode = modeArg as ExecutionMode;
-    const nextConfig: TargetAccountsConfig = {
-      ...targetConfig,
+    const nextMode = modeArg as TelegramExecutionMode;
+    await repository.putTelegramProfile({
+      chatId,
+      lotOverride: profile?.lotOverride,
       executionMode: nextMode,
+      lastProcessedUpdateId: profile?.lastProcessedUpdateId,
       updatedAt: new Date().toISOString()
-    };
-    await repository.putTargetAccountsConfig(configUserId, nextConfig);
-    telegramConfigCache.set(configUserId, Promise.resolve({
-      lotConfig,
-      targetConfig: nextConfig,
-      loadedAtMs: Date.now()
-    }));
+    });
+    const activeAccount = resolveExecutionTargetAccount(targetConfig, nextMode) || "-";
     await sendTelegramMessage(
       botToken,
       chatId,
-      `Execution mode set to ${nextMode}. Active account: ${modeAccount(nextConfig, nextMode) || "-"}`
+      nextMode === "TEST"
+        ? `Execution mode set to TEST. Trades will be simulated only. Would target account: ${activeAccount}`
+        : `Execution mode set to ${nextMode}. Active account: ${activeAccount}`
     );
     return jsonResponse(200, { ok: true });
   }
@@ -657,7 +728,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     await sendTelegramMessage(
       botToken,
       chatId,
-      "Unknown command. Try /risktrades 1,2,3, /mode demo, /mode live, /lot <size>, /history, /admin, or /news."
+      "Unknown command. Try /risktrades 1,2,3, /mode demo, /mode live, /mode test, /lot <size>, /history, /admin, or /news."
     );
     return jsonResponse(200, { ok: true, unknownCommand: true });
   }
@@ -690,7 +761,13 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     }
 
     if (arg === "reset") {
-      await repository.putTelegramProfile({ chatId, lotOverride: undefined, updatedAt: new Date().toISOString() });
+      await repository.putTelegramProfile({
+        chatId,
+        lotOverride: undefined,
+        executionMode: profile?.executionMode,
+        lastProcessedUpdateId: profile?.lastProcessedUpdateId,
+        updatedAt: new Date().toISOString()
+      });
       await sendTelegramMessage(botToken, chatId, "Lot override cleared.");
       return jsonResponse(200, { ok: true });
     }
@@ -702,7 +779,13 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       return jsonResponse(200, { ok: true });
     }
 
-    await repository.putTelegramProfile({ chatId, lotOverride: newLot, updatedAt: new Date().toISOString() });
+    await repository.putTelegramProfile({
+      chatId,
+      lotOverride: newLot,
+      executionMode: profile?.executionMode,
+      lastProcessedUpdateId: profile?.lastProcessedUpdateId,
+      updatedAt: new Date().toISOString()
+    });
     await sendTelegramMessage(botToken, chatId, `Lot override set to ${newLot}.`);
     return jsonResponse(200, { ok: true });
   }
@@ -730,6 +813,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     parseWarnings: parsed.warnings,
     lotConfig,
     targetConfig,
+    executionMode: resolveTelegramExecutionMode(profile, targetConfig),
     lotOverride: profile?.lotOverride,
     updateId
   });

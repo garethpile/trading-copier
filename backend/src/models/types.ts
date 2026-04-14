@@ -113,6 +113,7 @@ export interface TargetAccountsConfig {
 }
 
 export type ExecutionMode = "DEMO" | "LIVE";
+export type TelegramExecutionMode = ExecutionMode | "TEST";
 export type RiskTradeLeg = "1" | "2" | "3";
 export type RiskTradesMode = string;
 
@@ -135,6 +136,7 @@ export interface TelegramDraft {
 export interface TelegramProfile {
   chatId: string;
   lotOverride?: number;
+  executionMode?: TelegramExecutionMode;
   lastProcessedUpdateId?: number;
   updatedAt: string;
 }

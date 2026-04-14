@@ -458,6 +458,7 @@ export class TradeRepository {
       | {
           chatId?: string;
           lotOverride?: number | null;
+          executionMode?: string | null;
           lastProcessedUpdateId?: number | null;
           updatedAt?: string;
         }
@@ -466,6 +467,10 @@ export class TradeRepository {
     return {
       chatId,
       lotOverride: typeof item.lotOverride === "number" ? item.lotOverride : undefined,
+      executionMode:
+        item.executionMode === "LIVE" || item.executionMode === "TEST" || item.executionMode === "DEMO"
+          ? item.executionMode
+          : undefined,
       lastProcessedUpdateId: typeof item.lastProcessedUpdateId === "number" ? item.lastProcessedUpdateId : undefined,
       updatedAt: item.updatedAt ?? new Date().toISOString()
     };
@@ -483,6 +488,7 @@ export class TradeRepository {
           entityType: "TELEGRAM_PROFILE",
           chatId: profile.chatId,
           lotOverride: profile.lotOverride ?? null,
+          executionMode: profile.executionMode ?? null,
           lastProcessedUpdateId: profile.lastProcessedUpdateId ?? null,
           updatedAt: profile.updatedAt
         }
