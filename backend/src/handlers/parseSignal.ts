@@ -35,7 +35,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       });
     }
 
-    const result = parseSignal(body.rawMessage);
+    const result = parseSignal(body.rawMessage, { template: body.template });
     if (!result.valid) {
       console.error("parseSignal failed", {
         errors: result.errors,

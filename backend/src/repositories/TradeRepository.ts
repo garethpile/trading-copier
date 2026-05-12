@@ -459,6 +459,7 @@ export class TradeRepository {
           chatId?: string;
           lotOverride?: number | null;
           executionMode?: string | null;
+          tradeTemplate?: string | null;
           lastProcessedUpdateId?: number | null;
           updatedAt?: string;
         }
@@ -470,6 +471,10 @@ export class TradeRepository {
       executionMode:
         item.executionMode === "LIVE" || item.executionMode === "TEST" || item.executionMode === "DEMO"
           ? item.executionMode
+          : undefined,
+      tradeTemplate:
+        item.tradeTemplate === "VIPGOLD" || item.tradeTemplate === "EVOLUTE"
+          ? item.tradeTemplate
           : undefined,
       lastProcessedUpdateId: typeof item.lastProcessedUpdateId === "number" ? item.lastProcessedUpdateId : undefined,
       updatedAt: item.updatedAt ?? new Date().toISOString()
@@ -489,6 +494,7 @@ export class TradeRepository {
           chatId: profile.chatId,
           lotOverride: profile.lotOverride ?? null,
           executionMode: profile.executionMode ?? null,
+          tradeTemplate: profile.tradeTemplate ?? null,
           lastProcessedUpdateId: profile.lastProcessedUpdateId ?? null,
           updatedAt: profile.updatedAt
         }

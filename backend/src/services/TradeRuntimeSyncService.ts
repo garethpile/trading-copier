@@ -26,6 +26,8 @@ const toObj = (value: unknown): Obj | undefined =>
 
 const toArray = (value: unknown): Obj[] => (Array.isArray(value) ? (value as Obj[]) : []);
 const stableJson = (value: unknown): string => JSON.stringify(value);
+const formatTradeSetLine = (trade: TradeRecord): string | undefined =>
+  trade.tradeSetName ? `${trade.tradeSetName}${trade.tradeLabel ? ` | ${trade.tradeLabel}` : ""}` : undefined;
 
 const extractRequestId = (position: Obj): number | undefined => {
   const nested = asNumber(position.providerResponse && toObj(position.providerResponse)?.requestId);
@@ -227,9 +229,7 @@ export class TradeRuntimeSyncService {
     const secret = await this.getSecret();
     const apiKey = secret.apiKey?.trim();
     if (!apiKey) return undefined;
-    // Keep runtime sync auth aligned with execute-trade provider behavior:
-    // only send X-User-Email when explicitly configured via environment.
-    return { apiKey, userEmail: this.envUserEmail };
+    return { apiKey, userEmail: this.envUserEmail ?? (secret.userEmail?.trim() || undefined) };
   }
 
   private async headers(): Promise<Record<string, string> | undefined> {
@@ -818,11 +818,54 @@ export class TradeRuntimeSyncService {
       const nextBreakevenStatus = asString(breakeven.status);
       const nextSignalMagnitudeStatus = asString(signalMagnitudeRebase.status);
       const nextFinalLegTrailStatus = asString(finalLegTrail.status);
+      const previousLegs = toArray(providerResponse.legs);
+      const notificationHeader = formatTradeSetLine(trade);
+
+      for (const leg of normalizedLegs) {
+        const legNo = asNumber(leg.leg) ?? trade.strategyLegIndex ?? 1;
+        const previousLeg = previousLegs.find((item) => asNumber(item.leg) === legNo) ?? previousLegs[0];
+        const previousRuntimeState = asString(previousLeg?.runtimeState);
+        const nextRuntimeState = asString(leg.runtimeState);
+        if (!nextRuntimeState || nextRuntimeState === previousRuntimeState) continue;
+
+        const baseLines = [
+          ...(notificationHeader ? [notificationHeader] : []),
+          `Trade update: ${trade.tradeLabel ?? `Trade ${legNo}`}`,
+          `Symbol: ${trade.symbol} ${trade.side}`,
+          `Entry: ${trade.entry}`,
+          `Account: ${trade.targetAccount}`
+        ];
+
+        if (nextRuntimeState === "OPEN") {
+          await this.sendTelegramNotification([
+            ...baseLines,
+            "Event: limit activated",
+            ...(trade.takeProfits[0] ? [`TP: ${trade.takeProfits[0]}`] : []),
+            ...(trade.stopLoss ? [`SL: ${trade.stopLoss}`] : [])
+          ]);
+        } else if (nextRuntimeState === "CLOSED") {
+          const closePrice = extractLatestClosePrice(toArray(toObj(leg.runtimePayload)?.matchedHistoryEvents));
+          const tp = trade.takeProfits[0];
+          const sl = trade.stopLoss;
+          let closeReason = "trade closed";
+          if (closePrice !== undefined && tp !== undefined && Math.abs(closePrice - tp) <= 0.05) {
+            closeReason = "take profit reached";
+          } else if (closePrice !== undefined && sl !== undefined && Math.abs(closePrice - sl) <= 0.05) {
+            closeReason = "stop loss hit";
+          }
+          await this.sendTelegramNotification([
+            ...baseLines,
+            `Event: ${closeReason}`,
+            ...(closePrice !== undefined ? [`Close price: ${closePrice}`] : [])
+          ]);
+        }
+      }
 
       if (nextSignalMagnitudeStatus && nextSignalMagnitudeStatus !== previousSignalMagnitudeStatus) {
         await this.sendTelegramNotification([
-          `Trade update: ${trade.symbol} ${trade.side}`,
-          `Signal ID: ${trade.signalId}`,
+          ...(notificationHeader ? [notificationHeader] : []),
+          `Trade update: ${trade.tradeLabel ?? trade.signalId}`,
+          `Symbol: ${trade.symbol} ${trade.side}`,
           `Event: signal rebase ${nextSignalMagnitudeStatus.toLowerCase()}`,
           `Entry: ${trade.entry}`,
           `Account: ${trade.targetAccount}`
@@ -830,8 +873,9 @@ export class TradeRuntimeSyncService {
       }
       if (nextBreakevenStatus && nextBreakevenStatus !== previousBreakevenStatus) {
         await this.sendTelegramNotification([
-          `Trade update: ${trade.symbol} ${trade.side}`,
-          `Signal ID: ${trade.signalId}`,
+          ...(notificationHeader ? [notificationHeader] : []),
+          `Trade update: ${trade.tradeLabel ?? trade.signalId}`,
+          `Symbol: ${trade.symbol} ${trade.side}`,
           `Event: stop loss move ${nextBreakevenStatus.toLowerCase()}`,
           `Entry: ${trade.entry}`,
           `Account: ${trade.targetAccount}`
@@ -839,8 +883,9 @@ export class TradeRuntimeSyncService {
       }
       if (nextFinalLegTrailStatus && nextFinalLegTrailStatus !== previousFinalLegTrailStatus) {
         await this.sendTelegramNotification([
-          `Trade update: ${trade.symbol} ${trade.side}`,
-          `Signal ID: ${trade.signalId}`,
+          ...(notificationHeader ? [notificationHeader] : []),
+          `Trade update: ${trade.tradeLabel ?? trade.signalId}`,
+          `Symbol: ${trade.symbol} ${trade.side}`,
           `Event: final leg trail ${nextFinalLegTrailStatus.toLowerCase()}`,
           `Entry: ${trade.entry}`,
           `Account: ${trade.targetAccount}`

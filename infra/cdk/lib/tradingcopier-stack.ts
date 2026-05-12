@@ -157,6 +157,7 @@ export class TradingCopierStack extends cdk.Stack {
       METACOPIER_SECRET_ARN: metacopierSecret.secretArn,
       METACOPIER_BASE_URL: "https://api-london.metacopier.io",
       METACOPIER_GLOBAL_BASE_URL: "https://api.metacopier.io",
+      METACOPIER_USER_EMAIL: metacopierSecret.secretValueFromJson("userEmail").unsafeUnwrap(),
       METACOPIER_REQUEST_TIMEOUT_MS: process.env.METACOPIER_REQUEST_TIMEOUT_MS?.trim() || "25000",
       AUTOMATION_USER_ID:
         process.env.AUTOMATION_USER_ID?.trim() || process.env.TELEGRAM_CONFIG_USER_ID?.trim() || "",

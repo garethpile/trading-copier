@@ -1,6 +1,8 @@
 export type TradeSide = "BUY" | "SELL";
 export type TradeOrderType = "MARKET" | "LIMIT";
 
+export type TradeTemplate = "EVOLUTE" | "VIPGOLD";
+
 export interface ParsedTrade {
   symbol: string;
   side: TradeSide;
@@ -9,10 +11,14 @@ export interface ParsedTrade {
   stopLoss: number;
   takeProfits: number[];
   comment?: string;
+  template?: TradeTemplate;
+  entryRangeLow?: number;
+  entryRangeHigh?: number;
 }
 
 export interface ParseSignalRequest {
   rawMessage: string;
+  template?: TradeTemplate;
 }
 
 export interface ParseSignalResponse {
@@ -37,6 +43,10 @@ export interface ExecuteTradeResolvedRequest extends ExecuteTradeRequest {
   dedupeKey?: string;
   sourceMessageId?: string;
   receivedAt?: string;
+  strategyGroupId?: string;
+  strategyLegIndex?: number;
+  tradeSetName?: string;
+  tradeLabel?: string;
 }
 
 export type TradeStatus = "PARSED" | "EXECUTING" | "EXECUTED" | "PARTIAL" | "FAILED" | "REJECTED";
@@ -60,6 +70,11 @@ export interface TradeRecord {
   targetAccount: string;
   lotSize: number;
   note?: string;
+  tradeTemplate?: TradeTemplate;
+  strategyGroupId?: string;
+  strategyLegIndex?: number;
+  tradeSetName?: string;
+  tradeLabel?: string;
   status: TradeStatus;
   dedupeKey: string;
   parseWarnings: string[];
@@ -137,6 +152,7 @@ export interface TelegramProfile {
   chatId: string;
   lotOverride?: number;
   executionMode?: TelegramExecutionMode;
+  tradeTemplate?: TradeTemplate;
   lastProcessedUpdateId?: number;
   updatedAt: string;
 }

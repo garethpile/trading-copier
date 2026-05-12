@@ -310,8 +310,15 @@ export class BreakevenWebsocketAutomation {
         this.pendingAccountIds.size > 0 ? new Set(this.pendingAccountIds) : undefined;
       this.pendingAccountIds.clear();
       const trades = await this.repository.getHistory(this.automationUserId, 100);
+      const processedVipGoldGroups = new Set<string>();
       for (const trade of trades) {
         if (accountIds && !accountIds.has(trade.targetAccount)) continue;
+        if (trade.tradeTemplate === "VIPGOLD" && trade.strategyGroupId) {
+          if (processedVipGoldGroups.has(trade.strategyGroupId)) continue;
+          processedVipGoldGroups.add(trade.strategyGroupId);
+          await this.processVipGoldGroup(trade, trades);
+          continue;
+        }
         await this.processTrade(trade);
       }
     } catch (error) {
@@ -716,6 +723,84 @@ export class BreakevenWebsocketAutomation {
       providerResponse: updatedProviderResponse,
       errorMessage: nextErrorMessage
     });
+  }
+
+  private async processVipGoldGroup(anchorTrade: TradeRecord, trades: TradeRecord[]): Promise<void> {
+    const groupId = anchorTrade.strategyGroupId;
+    if (!groupId) return;
+
+    const groupTrades = trades
+      .filter((trade) => trade.tradeTemplate === "VIPGOLD" && trade.strategyGroupId === groupId)
+      .sort((a, b) => (a.strategyLegIndex ?? 999) - (b.strategyLegIndex ?? 999));
+    if (groupTrades.length < 2) return;
+
+    const earliestTp = Math.min(
+      ...groupTrades.flatMap((trade) => trade.takeProfits).filter((tp) => Number.isFinite(tp))
+    );
+    if (!Number.isFinite(earliestTp)) return;
+
+    const tp1Closed = groupTrades.find((trade) => {
+      const providerResponse = (trade.providerResponse as GenericObject | undefined) ?? {};
+      const legs = toArray(providerResponse.legs);
+      const leg = legs[0];
+      return (
+        trade.takeProfits[0] === earliestTp &&
+        leg &&
+        asString(leg.status) === "EXECUTED" &&
+        asString(leg.runtimeState) === "CLOSED"
+      );
+    });
+    if (!tp1Closed) return;
+
+    for (const trade of groupTrades) {
+      if (trade.signalId === tp1Closed.signalId) continue;
+      const providerResponse = (trade.providerResponse as GenericObject | undefined) ?? {};
+      const existingBe = (providerResponse.breakeven as GenericObject | undefined) ?? {};
+      if (asString(existingBe.status) === "COMPLETED") continue;
+
+      const legs = toArray(providerResponse.legs);
+      const leg = legs[0];
+      if (!leg || asString(leg.status) !== "EXECUTED" || asString(leg.runtimeState) !== "OPEN") continue;
+
+      const openPositions = this.openPositionsByAccount.get(trade.targetAccount) ?? [];
+      const requestId = extractRequestId(leg);
+      if (requestId === undefined) continue;
+      const openPosition = openPositions.find((position) => extractRequestId(position) === requestId);
+      if (!openPosition) continue;
+      if (
+        hasManualTargetEdit({
+          position: openPosition,
+          expectedStopLoss: extractManagedStopLoss(leg, trade),
+          expectedTakeProfit: extractManagedTakeProfit(leg, trade, 1)
+        })
+      ) {
+        continue;
+      }
+
+      const modifyResult = await this.modifyPositionStopLossToBreakEven({
+        accountId: trade.targetAccount,
+        position: openPosition,
+        side: trade.side,
+        breakEvenPrice: trade.entry
+      });
+      if (!modifyResult.ok) continue;
+
+      leg.currentStopLoss = modifyResult.verifiedStopLoss;
+      leg.managedStopLoss = modifyResult.verifiedStopLoss;
+      providerResponse.breakeven = {
+        status: "COMPLETED",
+        triggeredAt: new Date().toISOString(),
+        triggeredByStrategyGroup: groupId,
+        movedLegs: [{ leg: trade.strategyLegIndex ?? 1, positionId: extractPositionId(openPosition) ?? "-" }]
+      };
+      await this.repository.updateProviderResponse({
+        userId: trade.userId,
+        signalId: trade.signalId,
+        createdAt: trade.createdAt,
+        providerResponse,
+        errorMessage: undefined
+      });
+    }
   }
 
   private async modifyPositionTargets(input: {

@@ -1,5 +1,5 @@
 import { APIGatewayProxyHandlerV2 } from "aws-lambda";
-import { ExecuteTradeResolvedRequest, ExecutionMode, LotSizeConfig, ParsedTrade, TargetAccountsConfig, TelegramExecutionMode, TelegramProfile } from "../models/types";
+import { ExecuteTradeResolvedRequest, ExecutionMode, LotSizeConfig, ParsedTrade, TargetAccountsConfig, TelegramExecutionMode, TelegramProfile, TradeTemplate } from "../models/types";
 import { parseSignal } from "../parsers/signalParser";
 import { TradeRepository } from "../repositories/TradeRepository";
 import { ExecutionService, DuplicateTradeError } from "../services/ExecutionService";
@@ -171,6 +171,10 @@ export const resolveTelegramExecutionMode = (
   targetConfig: Pick<TargetAccountsConfig, "executionMode">
 ): TelegramExecutionMode => profile?.executionMode ?? targetConfig.executionMode ?? "DEMO";
 
+const resolveTelegramTradeTemplate = (
+  profile: Pick<TelegramProfile, "tradeTemplate"> | undefined
+): TradeTemplate => profile?.tradeTemplate ?? "EVOLUTE";
+
 const resolveExecutionTargetAccount = (config: TargetAccountsConfig, mode: TelegramExecutionMode): string => {
   if (mode === "TEST") {
     return modeAccount(config, "LIVE") || modeAccount(config, "DEMO");
@@ -251,6 +255,43 @@ const formatExecutionLegs = (input: {
   return output.length > 0 ? output : actualLines.map((entry) => entry.line);
 };
 
+export const buildVipGoldExecutionPlan = (trade: ParsedTrade): Array<{ leg: number; entry: number; takeProfit: number }> => {
+  if (trade.template !== "VIPGOLD") return [];
+  const low = trade.entryRangeLow;
+  const high = trade.entryRangeHigh;
+  if (!Number.isFinite(low) || !Number.isFinite(high)) return [];
+
+  const start = trade.side === "BUY" ? Math.max(low!, high!) : Math.min(low!, high!);
+  const step = trade.side === "BUY" ? -0.5 : 0.5;
+  const nearestTp = trade.side === "BUY"
+    ? Math.min(...trade.takeProfits)
+    : Math.max(...trade.takeProfits);
+  const furthestTp = trade.side === "BUY"
+    ? Math.max(...trade.takeProfits)
+    : Math.min(...trade.takeProfits);
+  const tpPattern = [nearestTp, nearestTp, furthestTp, nearestTp, nearestTp];
+
+  return tpPattern.map((takeProfit, index) => ({
+    leg: index + 1,
+    entry: Number((start + step * index).toFixed(2)),
+    takeProfit
+  }));
+};
+
+const buildVipGoldSetName = (now = new Date()): string => {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Africa/Johannesburg",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false
+  }).formatToParts(now);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? "00";
+  return `VIPGold ${get("year")}-${get("month")}-${get("day")}-${get("hour")}-${get("minute")}`;
+};
+
 const resolveConfigUserId = (chatId: string): string => process.env.TELEGRAM_CONFIG_USER_ID?.trim() || `telegram:${chatId}`;
 
 const sendTelegramMessage = async (botToken: string, chatId: string, text: string): Promise<void> => {
@@ -308,6 +349,7 @@ const handleAdmin = async (
       `Telegram mode: ${telegramMode}`,
       `Default mode: ${targetConfig.executionMode ?? "DEMO"}`,
       `Risk trades: ${targetConfig.riskTrades ?? "1,2,3"}`,
+      `Trade template: ${resolveTelegramTradeTemplate(profile)}`,
       `DEMO account: ${modeAccount(targetConfig, "DEMO") || "-"}`,
       `LIVE account: ${modeAccount(targetConfig, "LIVE") || "-"}`,
       `Test mode target: ${resolveExecutionTargetAccount(targetConfig, "TEST") || "-"}`,
@@ -374,6 +416,8 @@ const executeParsedTrade = async (input: {
   }
 
   const selectedLegs = selectedRiskTradeLegs(input.parsedTrade.takeProfits, input.targetConfig.riskTrades);
+  const vipGoldPlan = buildVipGoldExecutionPlan(input.parsedTrade);
+  const usingVipGoldTemplate = input.parsedTrade.template === "VIPGOLD";
 
   const ackStartedAt = Date.now();
   await sendTelegramMessage(
@@ -382,6 +426,7 @@ const executeParsedTrade = async (input: {
     [
       mode === "TEST" ? "Simulating trade (TEST mode)..." : "Submitting trade...",
       `Mode: ${mode}`,
+      `Template: ${input.parsedTrade.template ?? "EVOLUTE"}`,
       `Symbol: ${symbol} -> ${destinationBrokerSymbol}`,
       `Account: ${targetAccount}`,
       `Lot: ${lotSize}`
@@ -397,11 +442,19 @@ const executeParsedTrade = async (input: {
       [
         "TEST MODE - no trade was submitted.",
         `Mode: ${mode}`,
+        `Template: ${input.parsedTrade.template ?? "EVOLUTE"}`,
         `Symbol: ${symbol} -> ${destinationBrokerSymbol}`,
         `Account that would be used: ${targetAccount}`,
         `Lot: ${lotSize}`,
-        `Risk trades: ${input.targetConfig.riskTrades ?? "1,2,3"}`,
-        ...(selectedLegs.length > 0 ? ["Selected legs:", ...selectedLegs.map((leg) => `TP${leg.leg}: ${leg.takeProfit}`)] : []),
+        ...(usingVipGoldTemplate
+          ? [
+              "VIPGOLD planned limit entries:",
+              ...vipGoldPlan.map((leg) => `L${leg.leg}: ${input.parsedTrade.side} LIMIT ${leg.entry} | SL ${input.parsedTrade.stopLoss} | TP ${leg.takeProfit}`)
+            ]
+          : [
+              `Risk trades: ${input.targetConfig.riskTrades ?? "1,2,3"}`,
+              ...(selectedLegs.length > 0 ? ["Selected legs:", ...selectedLegs.map((leg) => `TP${leg.leg}: ${leg.takeProfit}`)] : [])
+            ]),
         ...(input.parseWarnings.length > 0 ? ["Parse warnings:", ...input.parseWarnings] : []),
         `Elapsed: ${totalMs}ms`,
         `Stage timings: mode=${modeResolvedMs}ms build=${requestBuildMs}ms validate=${validationMs}ms ack=${ackMs}ms`
@@ -411,6 +464,75 @@ const executeParsedTrade = async (input: {
   }
 
   const executionService = new ExecutionService(input.repository);
+
+  if (usingVipGoldTemplate) {
+    try {
+      const executeStartedAt = Date.now();
+      const vipGoldGroupId = `vipgold-${input.updateId ?? Date.now()}`;
+      const vipGoldSetName = buildVipGoldSetName();
+      const results: Array<{ leg: number; entry: number; takeProfit: number; result: Awaited<ReturnType<ExecutionService["executeResolved"]>> }> = [];
+      for (const leg of vipGoldPlan) {
+        const vipRequest: ExecuteTradeResolvedRequest = {
+          ...request,
+          trade: {
+            ...input.parsedTrade,
+            orderType: "LIMIT",
+            entry: leg.entry,
+            takeProfits: [leg.takeProfit]
+          },
+          riskTrades: "1",
+          note: `VIPGOLD ${vipGoldGroupId} L${leg.leg}`,
+          strategyGroupId: vipGoldGroupId,
+          strategyLegIndex: leg.leg,
+          tradeSetName: vipGoldSetName,
+          tradeLabel: `Trade ${leg.leg}`
+        };
+        const result = await executionService.executeResolved(input.executionUserId, vipRequest, input.parseWarnings);
+        results.push({ leg: leg.leg, entry: leg.entry, takeProfit: leg.takeProfit, result });
+      }
+      const executeMs = Date.now() - executeStartedAt;
+      const successCount = results.filter((item) => item.result.status === "EXECUTED").length;
+      const totalMs = Date.now() - startedAt;
+      await sendTelegramMessage(
+        input.botToken,
+        input.chatId,
+        [
+          `Execution: ${successCount === results.length ? "EXECUTED" : successCount > 0 ? "PARTIAL" : "FAILED"}`,
+          `Trade set: ${vipGoldSetName}`,
+          `Template: VIPGOLD`,
+          `Mode: ${mode}`,
+          `Symbol: ${symbol} -> ${destinationBrokerSymbol}`,
+          `Account: ${targetAccount}`,
+          `Lot: ${lotSize}`,
+          `Executed legs: ${successCount}/${results.length}`,
+          `Elapsed: ${totalMs}ms`,
+          `Stage timings: mode=${modeResolvedMs}ms build=${requestBuildMs}ms validate=${validationMs}ms ack=${ackMs}ms exec=${executeMs}ms`,
+          "Trades:",
+          ...results.map((item) => `Trade ${item.leg}: ${input.parsedTrade.side} LIMIT ${item.entry} | SL ${input.parsedTrade.stopLoss} | TP ${item.takeProfit} => ${item.result.status}${item.result.signalId ? ` (${item.result.signalId})` : ""} - ${item.result.message}`)
+        ].join("\n")
+      );
+      return;
+    } catch (error) {
+      if (error instanceof DuplicateTradeError) {
+        await sendTelegramMessage(
+          input.botToken,
+          input.chatId,
+          [
+            "Duplicate or in-flight VIPGOLD trade blocked.",
+            `Mode: ${mode}`,
+            `Template: VIPGOLD`,
+            `Symbol: ${symbol} -> ${destinationBrokerSymbol}`,
+            `Account: ${targetAccount}`,
+            `Lot: ${lotSize}`,
+            ...(error.existingSignalId ? [`Existing Signal ID: ${error.existingSignalId}`] : []),
+            "If this was intentional, wait for the existing request to clear or slightly change the signal inputs."
+          ].join("\n")
+        );
+        return;
+      }
+      throw error;
+    }
+  }
   const executeStartedAt = Date.now();
 
   try {
@@ -557,12 +679,13 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         "Trading Copier Bot ready.",
         "Paste a signal and it will execute immediately.",
         `Mode: ${resolveTelegramExecutionMode(profile, targetConfig)}`,
+        `Trade template: ${resolveTelegramTradeTemplate(profile)}`,
         `Risk trades: ${targetConfig.riskTrades ?? "1,2,3"}`,
         `DEMO account: ${modeAccount(targetConfig, "DEMO") || "-"}`,
         `LIVE account: ${modeAccount(targetConfig, "LIVE") || "-"}`,
         `Test mode target: ${resolveExecutionTargetAccount(targetConfig, "TEST") || "-"}`,
         `Lot override: ${profile?.lotOverride ?? "none"}`,
-        "Commands: /mode demo, /mode live, /mode test, /risktrades 1,2,3, /lot <size>, /lot reset, /history, /admin, /news, /news poll, /news pause, /news resume",
+        "Commands: /mode demo, /mode live, /mode test, /tradetemplate evolute|vipgold, /risktrades 1,2,3, /lot <size>, /lot reset, /history, /admin, /news, /news poll, /news pause, /news resume",
         `Loaded symbols: ${Object.keys(lotConfig.symbols).length}`
       ].join("\n")
     );
@@ -669,6 +792,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       chatId,
       lotOverride: profile?.lotOverride,
       executionMode: nextMode,
+      tradeTemplate: profile?.tradeTemplate,
       lastProcessedUpdateId: profile?.lastProcessedUpdateId,
       updatedAt: new Date().toISOString()
     });
@@ -680,6 +804,32 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         ? `Execution mode set to TEST. Trades will be simulated only. Would target account: ${activeAccount}`
         : `Execution mode set to ${nextMode}. Active account: ${activeAccount}`
     );
+    return jsonResponse(200, { ok: true });
+  }
+
+  if (text.startsWith("/tradetemplate")) {
+    const templateArg = text.split(/\s+/)[1]?.trim().toUpperCase();
+    if (!templateArg) {
+      await sendTelegramMessage(
+        botToken,
+        chatId,
+        `Current trade template: ${resolveTelegramTradeTemplate(profile)}\nUsage: /tradetemplate evolute OR /tradetemplate vipgold`
+      );
+      return jsonResponse(200, { ok: true });
+    }
+    if (templateArg !== "EVOLUTE" && templateArg !== "VIPGOLD") {
+      await sendTelegramMessage(botToken, chatId, "Usage: /tradetemplate evolute OR /tradetemplate vipgold");
+      return jsonResponse(200, { ok: true });
+    }
+    await repository.putTelegramProfile({
+      chatId,
+      lotOverride: profile?.lotOverride,
+      executionMode: profile?.executionMode,
+      tradeTemplate: templateArg,
+      lastProcessedUpdateId: profile?.lastProcessedUpdateId,
+      updatedAt: new Date().toISOString()
+    });
+    await sendTelegramMessage(botToken, chatId, `Trade template set to ${templateArg}.`);
     return jsonResponse(200, { ok: true });
   }
 
@@ -728,7 +878,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     await sendTelegramMessage(
       botToken,
       chatId,
-      "Unknown command. Try /risktrades 1,2,3, /mode demo, /mode live, /mode test, /lot <size>, /history, /admin, or /news."
+      "Unknown command. Try /tradetemplate evolute, /tradetemplate vipgold, /risktrades 1,2,3, /mode demo, /mode live, /mode test, /lot <size>, /history, /admin, or /news."
     );
     return jsonResponse(200, { ok: true, unknownCommand: true });
   }
@@ -765,6 +915,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         chatId,
         lotOverride: undefined,
         executionMode: profile?.executionMode,
+        tradeTemplate: profile?.tradeTemplate,
         lastProcessedUpdateId: profile?.lastProcessedUpdateId,
         updatedAt: new Date().toISOString()
       });
@@ -783,6 +934,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       chatId,
       lotOverride: newLot,
       executionMode: profile?.executionMode,
+      tradeTemplate: profile?.tradeTemplate,
       lastProcessedUpdateId: profile?.lastProcessedUpdateId,
       updatedAt: new Date().toISOString()
     });
@@ -790,7 +942,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     return jsonResponse(200, { ok: true });
   }
 
-  const parsed = parseSignal(signalText);
+  const parsed = parseSignal(signalText, { template: resolveTelegramTradeTemplate(profile) });
   if (!parsed.valid || !parsed.trade) {
     console.error("telegramWebhook parse failed", {
       chatId,

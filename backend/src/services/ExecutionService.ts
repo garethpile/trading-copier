@@ -14,6 +14,7 @@ type LegResult = {
   providerResponse?: unknown;
 };
 
+
 const selectRiskTradeLegs = (
   takeProfits: number[],
   riskTrades?: RiskTradesMode
@@ -161,6 +162,11 @@ export class ExecutionService {
       targetAccount: req.targetAccount,
       lotSize: req.lotSize,
       note: req.note,
+      tradeTemplate: req.trade.template,
+      strategyGroupId: req.strategyGroupId,
+      strategyLegIndex: req.strategyLegIndex,
+      tradeSetName: req.tradeSetName,
+      tradeLabel: req.tradeLabel,
       status: "EXECUTING",
       dedupeKey,
       parseWarnings,
