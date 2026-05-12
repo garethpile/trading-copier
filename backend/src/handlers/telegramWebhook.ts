@@ -960,7 +960,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     botToken,
     chatId,
     executionUserId,
-    rawMessage: text,
+    rawMessage: signalText,
     parsedTrade: parsed.trade,
     parseWarnings: parsed.warnings,
     lotConfig,
