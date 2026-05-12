@@ -3,6 +3,7 @@ import { ConnectivityTestResult, ExecutionProvider, TradeExecutionResult } from 
 
 interface MetaCopierSecret {
   apiKey: string;
+  userEmail?: string;
 }
 
 type GenericObject = Record<string, unknown>;
@@ -62,15 +63,14 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
     private readonly timeoutMs = Number(process.env.METACOPIER_REQUEST_TIMEOUT_MS ?? "25000")
   ) {}
 
-  private buildHeaders(apiKey: string): Record<string, string> {
+  private buildHeaders(credentials: { apiKey: string; userEmail?: string }): Record<string, string> {
     const headers: Record<string, string> = {
-      "X-API-KEY": apiKey,
+      "X-API-KEY": credentials.apiKey,
       "Content-Type": "application/json"
     };
 
-    const userEmail = process.env.METACOPIER_USER_EMAIL;
-    if (userEmail && userEmail.trim()) {
-      headers["X-User-Email"] = userEmail.trim();
+    if (credentials.userEmail?.trim()) {
+      headers["X-User-Email"] = credentials.userEmail.trim();
     }
 
     return headers;
@@ -78,8 +78,9 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
 
   private async getSecret(): Promise<MetaCopierSecret> {
     const envApiKey = process.env.METACOPIER_API_KEY;
+    const envUserEmail = process.env.METACOPIER_USER_EMAIL?.trim() || undefined;
     if (envApiKey && envApiKey.trim()) {
-      return { apiKey: envApiKey.trim() };
+      return { apiKey: envApiKey.trim(), userEmail: envUserEmail };
     }
 
     if (this.secretCache) return this.secretCache;
@@ -94,7 +95,10 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
       throw new Error("MetaCopier secret missing apiKey");
     }
 
-    this.secretCache = { apiKey: parsed.apiKey };
+    this.secretCache = {
+      apiKey: parsed.apiKey,
+      userEmail: envUserEmail ?? (parsed.userEmail?.trim() || undefined)
+    };
     return this.secretCache;
   }
 
@@ -163,7 +167,7 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
     try {
       const response = await this.fetchWithTimeout(endpoint, {
         method: "GET",
-        headers: this.buildHeaders(input.apiKey)
+        headers: this.buildHeaders({ apiKey: input.apiKey, userEmail: process.env.METACOPIER_USER_EMAIL?.trim() || undefined })
       });
       if (!response.ok) return false;
       const body = await this.readBody(response);
@@ -245,7 +249,7 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
         const requestStartAt = Date.now();
         response = await this.fetchWithTimeout(endpoint, {
           method: "POST",
-          headers: this.buildHeaders(secret.apiKey),
+          headers: this.buildHeaders(secret),
           body: JSON.stringify({
             symbol,
             orderType: providerOrderType,
@@ -394,7 +398,7 @@ export class MetaCopierExecutionProvider implements ExecutionProvider {
       const endpoint = `${this.globalBaseUrl.replace(/\/$/, "")}/rest/api/v1/accounts`;
       const response = await this.fetchWithTimeout(endpoint, {
         method: "GET",
-        headers: this.buildHeaders(secret.apiKey)
+        headers: this.buildHeaders(secret)
       });
       const body = await this.readBody(response);
       if (!response.ok) {
