@@ -9,7 +9,7 @@ const normalizeRiskTrades = (value: unknown): string => {
   const normalized = value
     .split(",")
     .map((part) => part.trim())
-    .filter((part) => part === "1" || part === "2" || part === "3")
+    .filter((part) => part === "1" || part === "2" || part === "3" || part === "4")
     .filter((part, index, arr) => arr.indexOf(part) === index)
     .sort()
     .join(",");

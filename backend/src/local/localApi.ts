@@ -13,6 +13,8 @@ import { handler as executeTradeHandler } from "../handlers/executeTrade";
 import { handler as executeTradeFastHandler } from "../handlers/executeTradeFast";
 import { handler as getTradeHistoryHandler } from "../handlers/getTradeHistory";
 import { handler as getTradeByIdHandler } from "../handlers/getTradeById";
+import { handler as deleteTradeHandler } from "../handlers/deleteTrade";
+import { handler as deleteTradeHistoryBulkHandler } from "../handlers/deleteTradeHistoryBulk";
 import { handler as testConnectivityHandler } from "../handlers/testConnectivity";
 import { handler as getSocketFeatureStatusHandler } from "../handlers/getSocketFeatureStatus";
 import { handler as enableSocketFeatureHandler } from "../handlers/enableSocketFeature";
@@ -173,6 +175,11 @@ app.get(
   "/trade/:signalId",
   invoke(getTradeByIdHandler as Handler, (req) => ({ signalId: String(req.params.signalId ?? "") }))
 );
+app.post(
+  "/trade/:signalId/delete",
+  invoke(deleteTradeHandler as Handler, (req) => ({ signalId: String(req.params.signalId ?? "") }))
+);
+app.post("/trade-history/delete-bulk", invoke(deleteTradeHistoryBulkHandler as Handler));
 app.post(
   "/trade/:signalId/manage/preview",
   invoke(previewTradeManagementHandler as Handler, (req) => ({ signalId: String(req.params.signalId ?? "") }))

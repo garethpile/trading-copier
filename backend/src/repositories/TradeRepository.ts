@@ -27,7 +27,7 @@ const normalizeSymbol = (value: string): string => value.trim().toUpperCase();
 
 const normalizeRiskTrades = (value: unknown): RiskTradesMode => {
   if (typeof value !== "string") return "1,2,3";
-  const allowed = new Set<RiskTradeLeg>(["1", "2", "3"]);
+  const allowed = new Set<RiskTradeLeg>(["1", "2", "3", "4"]);
   const normalized = value
     .split(",")
     .map((part) => part.trim())
@@ -253,6 +253,27 @@ export class TradeRepository {
     );
 
     return out.Items?.[0] as TradeRecord | undefined;
+  }
+
+  async deleteTradeRecord(record: Pick<TradeRecord, "pk" | "sk" | "dedupeKey">): Promise<void> {
+    await this.doc.send(
+      new DeleteCommand({
+        TableName: this.tableName,
+        Key: { pk: record.pk, sk: record.sk }
+      })
+    );
+
+    if (record.dedupeKey) {
+      await this.doc.send(
+        new DeleteCommand({
+          TableName: this.tableName,
+          Key: {
+            pk: record.pk,
+            sk: `DEDUPE#${record.dedupeKey}`
+          }
+        })
+      );
+    }
   }
 
   async getLotSizeConfig(userId: string): Promise<LotSizeConfig> {

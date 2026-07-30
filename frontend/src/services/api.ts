@@ -59,6 +59,20 @@ export const fetchTradeHistory = async (): Promise<TradeRecord[]> => {
   return result.items;
 };
 
+export const deleteTrade = async (signalId: string): Promise<{ success: boolean; signalId: string }> =>
+  callApi<{ success: boolean; signalId: string }>(`/trade/${encodeURIComponent(signalId)}/delete`, {
+    method: "POST",
+    body: JSON.stringify({})
+  });
+
+export const deleteTradeHistoryBulk = async (
+  scope: "ACTIVE" | "CLOSED"
+): Promise<{ success: boolean; scope: "ACTIVE" | "CLOSED"; deletedCount: number }> =>
+  callApi<{ success: boolean; scope: "ACTIVE" | "CLOSED"; deletedCount: number }>("/trade-history/delete-bulk", {
+    method: "POST",
+    body: JSON.stringify({ scope })
+  });
+
 export const testConnectivity = async (): Promise<ConnectivityTestResponse> =>
   callApi<ConnectivityTestResponse>("/connectivity-test", {
     method: "POST",

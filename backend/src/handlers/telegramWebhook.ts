@@ -71,7 +71,7 @@ const normalizeRiskTrades = (value?: string): string => {
   const normalized = (value ?? "")
     .split(",")
     .map((part) => part.trim())
-    .filter((part) => part === "1" || part === "2" || part === "3")
+    .filter((part) => part === "1" || part === "2" || part === "3" || part === "4")
     .filter((part, index, arr) => arr.indexOf(part) === index)
     .sort()
     .join(",");
@@ -83,7 +83,7 @@ const isValidRiskTradesInput = (value?: string): boolean => {
   if (!trimmed) return false;
   return trimmed.split(",").every((part) => {
     const leg = part.trim();
-    return leg === "1" || leg === "2" || leg === "3";
+    return leg === "1" || leg === "2" || leg === "3" || leg === "4";
   });
 };
 const summarizeRawMessage = (rawMessage: string) => {
@@ -187,7 +187,7 @@ const selectedRiskTradeLegs = (takeProfits: number[], riskTrades?: string): Arra
     normalizeRiskTrades(riskTrades)
       .split(",")
       .map((part) => part.trim())
-      .filter((part) => part === "1" || part === "2" || part === "3")
+      .filter((part) => part === "1" || part === "2" || part === "3" || part === "4")
       .map((part) => Number(part))
   );
 
@@ -261,19 +261,18 @@ export const buildVipGoldExecutionPlan = (trade: ParsedTrade): Array<{ leg: numb
   const high = trade.entryRangeHigh;
   if (!Number.isFinite(low) || !Number.isFinite(high)) return [];
 
-  const start = trade.side === "BUY" ? Math.max(low!, high!) : Math.min(low!, high!);
-  const step = trade.side === "BUY" ? -0.5 : 0.5;
-  const nearestTp = trade.side === "BUY"
-    ? Math.min(...trade.takeProfits)
-    : Math.max(...trade.takeProfits);
-  const furthestTp = trade.side === "BUY"
-    ? Math.max(...trade.takeProfits)
-    : Math.min(...trade.takeProfits);
-  const tpPattern = [nearestTp, nearestTp, furthestTp, nearestTp, nearestTp];
+  const tp1 = trade.takeProfits[0];
+  const tp2 = trade.takeProfits[1] ?? trade.takeProfits[0];
+  if (!Number.isFinite(tp1) || !Number.isFinite(tp2)) return [];
+
+  const nearestBoundary = trade.side === "BUY" ? Math.max(low!, high!) : Math.min(low!, high!);
+  const entry = Number((trade.side === "BUY" ? nearestBoundary - 1 : nearestBoundary + 1).toFixed(2));
+  const midTp = Number(((tp1 + tp2) / 2).toFixed(2));
+  const tpPattern = [tp1, tp1, midTp, tp2];
 
   return tpPattern.map((takeProfit, index) => ({
     leg: index + 1,
-    entry: Number((start + step * index).toFixed(2)),
+    entry,
     takeProfit
   }));
 };
@@ -482,6 +481,19 @@ const executeParsedTrade = async (input: {
           },
           riskTrades: "1",
           note: `VIPGOLD ${vipGoldGroupId} L${leg.leg}`,
+          dedupeKey: [
+            "vipgold",
+            vipGoldGroupId,
+            input.parsedTrade.symbol,
+            input.parsedTrade.side,
+            "limit",
+            leg.entry,
+            input.parsedTrade.stopLoss,
+            leg.takeProfit,
+            targetAccount,
+            lotSize,
+            `leg${leg.leg}`
+          ].join("|").toLowerCase(),
           strategyGroupId: vipGoldGroupId,
           strategyLegIndex: leg.leg,
           tradeSetName: vipGoldSetName,
@@ -685,7 +697,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
         `LIVE account: ${modeAccount(targetConfig, "LIVE") || "-"}`,
         `Test mode target: ${resolveExecutionTargetAccount(targetConfig, "TEST") || "-"}`,
         `Lot override: ${profile?.lotOverride ?? "none"}`,
-        "Commands: /mode demo, /mode live, /mode test, /tradetemplate evolute|vipgold, /risktrades 1,2,3, /lot <size>, /lot reset, /history, /admin, /news, /news poll, /news pause, /news resume",
+        "Commands: /mode demo, /mode live, /mode test, /tradetemplate evolute|vipgold, /risktrades 1,2,3,4, /lot <size>, /lot reset, /history, /admin, /news, /news poll, /news pause, /news resume",
         `Loaded symbols: ${Object.keys(lotConfig.symbols).length}`
       ].join("\n")
     );
@@ -840,7 +852,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       await sendTelegramMessage(
         botToken,
         chatId,
-        `Current risk trades: ${targetConfig.riskTrades ?? "1,2,3"}\nUsage: /risktrades 1,2,3`
+        `Current risk trades: ${targetConfig.riskTrades ?? "1,2,3"}\nUsage: /risktrades 1,2,3,4`
       );
       return jsonResponse(200, { ok: true });
     }
@@ -849,7 +861,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
       await sendTelegramMessage(
         botToken,
         chatId,
-        "Usage: /risktrades 1,2,3\nAllowed values are comma-separated leg numbers using only 1, 2, and 3."
+        "Usage: /risktrades 1,2,3,4\nAllowed values are comma-separated leg numbers using only 1, 2, 3, and 4."
       );
       return jsonResponse(200, { ok: true });
     }
@@ -878,7 +890,7 @@ export const handler: APIGatewayProxyHandlerV2 = async (event) => {
     await sendTelegramMessage(
       botToken,
       chatId,
-      "Unknown command. Try /tradetemplate evolute, /tradetemplate vipgold, /risktrades 1,2,3, /mode demo, /mode live, /mode test, /lot <size>, /history, /admin, or /news."
+      "Unknown command. Try /tradetemplate evolute, /tradetemplate vipgold, /risktrades 1,2,3,4, /mode demo, /mode live, /mode test, /lot <size>, /history, /admin, or /news."
     );
     return jsonResponse(200, { ok: true, unknownCommand: true });
   }

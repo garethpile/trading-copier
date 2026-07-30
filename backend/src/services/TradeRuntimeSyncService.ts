@@ -329,6 +329,56 @@ export class TradeRuntimeSyncService {
     return map;
   }
 
+  private async loadHistoryByAccount(
+    accountIds: string[]
+  ): Promise<Map<string, { ok: boolean; history: Obj[] }>> {
+    const map = new Map<string, { ok: boolean; history: Obj[] }>();
+    const headers = await this.headers();
+    if (!headers) {
+      console.error("Trade runtime sync skipped: missing MetaCopier credentials");
+      return map;
+    }
+
+    await Promise.all(
+      accountIds.map(async (accountId) => {
+        const hosts = Array.from(new Set([this.baseUrl, this.globalBaseUrl].map((v) => v.replace(/\/$/, ""))));
+        const endpointCandidates = hosts.flatMap((host) => [
+          `${host}/rest/api/v1/accounts/${accountId}/history`,
+          `${host}/rest/api/v1/accounts/${accountId}/deals`,
+          `${host}/rest/api/v1/accounts/${accountId}/closed-positions`
+        ]);
+
+        const failures: string[] = [];
+        for (const endpoint of endpointCandidates) {
+          try {
+            const res = await this.fetchJson(endpoint, { method: "GET", headers });
+            if (!res.ok) {
+              failures.push(`${endpoint} -> HTTP ${res.status}`);
+              continue;
+            }
+
+            const bodyObj = toObj(res.body);
+            const history = Array.isArray(res.body)
+              ? (res.body as Obj[])
+              : toArray(bodyObj?.history ?? bodyObj?.items ?? bodyObj?.positions ?? bodyObj?.deals ?? bodyObj?.closedPositions);
+            map.set(accountId, { ok: true, history });
+            return;
+          } catch (error) {
+            failures.push(`${endpoint} -> ${String(error)}`);
+          }
+        }
+
+        console.error("Trade runtime sync: unable to load account history", {
+          accountId,
+          attempts: failures
+        });
+        map.set(accountId, { ok: false, history: [] });
+      })
+    );
+
+    return map;
+  }
+
   private async modifyPositionTargets(input: {
     accountId: string;
     position: Obj;
@@ -426,6 +476,7 @@ export class TradeRuntimeSyncService {
 
     const accountIds = Array.from(new Set(multiTrades.map((t) => t.targetAccount)));
     const openByAccount = await this.loadOpenPositionsByAccount(accountIds);
+    const historyByAccount = await this.loadHistoryByAccount(accountIds);
     const updated: TradeRecord[] = [];
 
     for (const trade of trades) {
@@ -441,8 +492,11 @@ export class TradeRuntimeSyncService {
         continue;
       }
 
+      const historyAccount = historyByAccount.get(trade.targetAccount);
       const legs = toArray(providerResponse.legs);
       const openPositions = account.positions;
+      const historyEvents = historyAccount?.ok ? historyAccount.history : [];
+      const tradeCreatedMs = Date.parse(trade.createdAt);
       const expectedSymbols = new Set(
         [
           normalizeSymbol(trade.symbol),
@@ -459,16 +513,29 @@ export class TradeRuntimeSyncService {
       const legRequestIds = new Set(
         legs.map((leg) => extractRequestId(toObj(leg) ?? {})).filter((v): v is number => v !== undefined)
       );
-      const matchedOpenPositions =
+      const requestMatchedOpenPositions =
         legRequestIds.size === 0
           ? []
           : candidateOpenPositions.filter((p) => {
               const requestId = extractRequestId(p);
               return requestId !== undefined && legRequestIds.has(requestId);
             });
+      const matchedOpenPositions =
+        requestMatchedOpenPositions.length > 0 || legRequestIds.size === 0
+          ? requestMatchedOpenPositions
+          : candidateOpenPositions;
       const openReqIds = new Set(
         matchedOpenPositions.map((p) => extractRequestId(p)).filter((v): v is number => v !== undefined)
       );
+      const candidateHistoryEvents = historyEvents.filter((event) => {
+        const side = extractPositionSide(event);
+        const symbol = extractPositionSymbol(event);
+        if (!(side === trade.side && !!symbol && expectedSymbols.has(symbol))) return false;
+        if (!Number.isFinite(tradeCreatedMs)) return true;
+        const eventMs = extractEventTimeMs(event);
+        if (eventMs === undefined || !Number.isFinite(eventMs)) return true;
+        return Math.abs(eventMs - tradeCreatedMs) <= this.requestTimeoutMs * 40;
+      });
       const usedPositionIds = new Set<string>();
       const normalizedLegs: Obj[] = legs.map((leg) => {
         const legObj = toObj(leg) ?? {};
@@ -489,13 +556,24 @@ export class TradeRuntimeSyncService {
         const currentTakeProfit = position ? extractTakeProfit(position) : undefined;
         const managedStopLoss = extractManagedStopLoss(legObj, trade);
         const managedTakeProfit = extractManagedTakeProfit(legObj, trade, asNumber(legObj.leg));
+        const historyMatches =
+          requestId !== undefined
+            ? candidateHistoryEvents.filter((event) => extractRequestId(event) === requestId)
+            : [];
+        const fallbackHistoryMatches = historyMatches.length > 0 ? historyMatches : candidateHistoryEvents;
         let runtimeState: "OPEN" | "CLOSED" | "UNKNOWN" = "UNKNOWN";
         if (openMatches.length > 0) {
           runtimeState = "OPEN";
         } else if (originalStatus === "FAILED") {
           runtimeState = "CLOSED";
         } else if (requestId !== undefined && originalStatus === "EXECUTED") {
-          runtimeState = openReqIds.has(requestId) ? "OPEN" : "UNKNOWN";
+          runtimeState = openReqIds.has(requestId)
+            ? "OPEN"
+            : fallbackHistoryMatches.length > 0
+              ? "CLOSED"
+              : "UNKNOWN";
+        } else if (originalStatus === "EXECUTED" && fallbackHistoryMatches.length > 0) {
+          runtimeState = "CLOSED";
         }
         const previousRuntimeState = asString(legObj.runtimeState)?.toUpperCase();
         if (
@@ -521,7 +599,8 @@ export class TradeRuntimeSyncService {
           ...(managedTakeProfit !== undefined ? { managedTakeProfit } : {}),
           runtimePayload: {
             matchedOpenPositions: openMatches.slice(0, MAX_TRADE_OPEN_POSITIONS),
-            matchedHistoryEvents: previousHistoryEvents.slice(-MAX_TRADE_HISTORY_EVENTS)
+            matchedHistoryEvents:
+              (fallbackHistoryMatches.length > 0 ? fallbackHistoryMatches : previousHistoryEvents).slice(-MAX_TRADE_HISTORY_EVENTS)
           },
           runtimeState
         };
@@ -785,7 +864,7 @@ export class TradeRuntimeSyncService {
         legs: normalizedLegs,
         runtimePayload: {
           matchedOpenPositions: matchedOpenPositions.slice(0, MAX_TRADE_OPEN_POSITIONS),
-          matchedHistoryEvents: ([] as Obj[]).slice(-MAX_TRADE_HISTORY_EVENTS)
+          matchedHistoryEvents: candidateHistoryEvents.slice(-MAX_TRADE_HISTORY_EVENTS)
         },
         runtimeAdoption,
         signalMagnitudeRebase,

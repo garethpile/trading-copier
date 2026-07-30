@@ -129,7 +129,7 @@ export interface TargetAccountsConfig {
 
 export type ExecutionMode = "DEMO" | "LIVE";
 export type TelegramExecutionMode = ExecutionMode | "TEST";
-export type RiskTradeLeg = "1" | "2" | "3";
+export type RiskTradeLeg = "1" | "2" | "3" | "4";
 export type RiskTradesMode = string;
 
 export interface TelegramDraft {

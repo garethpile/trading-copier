@@ -199,6 +199,22 @@ export class TradingCopierStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10)
     });
 
+    const deleteTradeFn = new lambda.Function(this, "DeleteTradeFn", {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: "handlers/deleteTrade.handler",
+      code: lambdaCode,
+      environment: commonEnv,
+      timeout: cdk.Duration.seconds(10)
+    });
+
+    const deleteTradeHistoryBulkFn = new lambda.Function(this, "DeleteTradeHistoryBulkFn", {
+      runtime: lambda.Runtime.NODEJS_22_X,
+      handler: "handlers/deleteTradeHistoryBulk.handler",
+      code: lambdaCode,
+      environment: commonEnv,
+      timeout: cdk.Duration.seconds(20)
+    });
+
     const previewTradeManagementFn = new lambda.Function(this, "PreviewTradeManagementFn", {
       runtime: lambda.Runtime.NODEJS_22_X,
       handler: "handlers/previewTradeManagement.handler",
@@ -360,6 +376,8 @@ export class TradingCopierStack extends cdk.Stack {
     table.grantReadWriteData(executeTradeFn);
     table.grantReadWriteData(getTradeHistoryFn);
     table.grantReadWriteData(getTradeByIdFn);
+    table.grantReadWriteData(deleteTradeFn);
+    table.grantReadWriteData(deleteTradeHistoryBulkFn);
     table.grantReadWriteData(previewTradeManagementFn);
     table.grantReadWriteData(applyTradeManagementFn);
     table.grantReadWriteData(runRuntimeSyncFn);
@@ -498,6 +516,20 @@ export class TradingCopierStack extends cdk.Stack {
       path: "/trade/{signalId}",
       methods: [apigwv2.HttpMethod.GET],
       integration: new integrations.HttpLambdaIntegration("GetTradeByIdIntegration", getTradeByIdFn),
+      authorizer: jwtAuthorizer
+    });
+
+    httpApi.addRoutes({
+      path: "/trade/{signalId}/delete",
+      methods: [apigwv2.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration("DeleteTradeIntegration", deleteTradeFn),
+      authorizer: jwtAuthorizer
+    });
+
+    httpApi.addRoutes({
+      path: "/trade-history/delete-bulk",
+      methods: [apigwv2.HttpMethod.POST],
+      integration: new integrations.HttpLambdaIntegration("DeleteTradeHistoryBulkIntegration", deleteTradeHistoryBulkFn),
       authorizer: jwtAuthorizer
     });
 

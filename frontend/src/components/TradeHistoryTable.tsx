@@ -109,12 +109,20 @@ export function TradeHistoryTable({
   items,
   filter,
   onFilterChange,
-  accountModeByAccount
+  accountModeByAccount,
+  deletingSignalId,
+  onDeleteTrade,
+  deletingBulkScope,
+  onDeleteBulk
 }: {
   items: TradeRecord[];
   filter: FilterMode;
   onFilterChange: (mode: FilterMode) => void;
   accountModeByAccount?: Record<string, string>;
+  deletingSignalId?: string;
+  onDeleteTrade: (signalId: string) => void;
+  deletingBulkScope?: FilterMode;
+  onDeleteBulk: (scope: FilterMode) => void;
 }) {
   const [collapsedBySignal, setCollapsedBySignal] = useState<Record<string, boolean>>({});
   const filtered = items.filter((item) => {
@@ -127,6 +135,23 @@ export function TradeHistoryTable({
       <div className="card stack">
         <div className="row spread">
           <h3>Trade Requests</h3>
+          <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
+            <button
+              type="button"
+              className="ghost"
+              disabled={deletingBulkScope === "ACTIVE"}
+              onClick={() => onDeleteBulk("ACTIVE")}
+            >
+              {deletingBulkScope === "ACTIVE" ? "Deleting active..." : "Delete All Active"}
+            </button>
+            <button
+              type="button"
+              className="ghost"
+              disabled={deletingBulkScope === "CLOSED"}
+              onClick={() => onDeleteBulk("CLOSED")}
+            >
+              {deletingBulkScope === "CLOSED" ? "Deleting closed..." : "Delete All Closed"}
+            </button>
           <div className="pill-group" role="tablist" aria-label="Trade request filter">
             <button
               type="button"
@@ -142,6 +167,7 @@ export function TradeHistoryTable({
             >
               Closed
             </button>
+          </div>
           </div>
         </div>
       </div>
@@ -186,6 +212,21 @@ export function TradeHistoryTable({
                 </div>
                 <div className="row">
                   <span className={state.className}>{state.label}</span>
+                  {filter === "ACTIVE" ? (
+                    <button
+                      type="button"
+                      className="ghost"
+                      disabled={deletingSignalId === item.signalId}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onDeleteTrade(item.signalId);
+                      }}
+                      aria-label={`Delete ${item.signalId}`}
+                      title="Delete trade"
+                    >
+                      {deletingSignalId === item.signalId ? "..." : "🗑️"}
+                    </button>
+                  ) : null}
                   <span className="collapse-icon-button" aria-hidden="true">
                     {collapsed ? "▾" : "▴"}
                   </span>

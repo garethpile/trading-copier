@@ -4,6 +4,7 @@
 
 | Date | Update | Author |
 | --- | --- | --- |
+| 2026-07-23 | Updated deployment/config notes with the actual live AWS account, region, stack, and deploy profile mapping; documented that no separate AWS dev/test stack is currently wired in the repo; documented current VIPGold 4-leg same-entry behavior and its staged stop-management rules. | Codex |
 | 2026-04-14 | Added Telegram-only `/mode test` dry-run behavior, documented caption normalization before parsing, and documented that Lambda deploys from compiled `backend/dist`, not `backend/src`. | Codex |
 | 2026-03-29 | Updated the architecture document to reflect explicit `risktrades` TP-leg selection and the Telegram `/risktrades` command. | Codex |
 | 2026-03-23 | Created the current-state as-is architecture document for TradingCopier based on the active repository and live deployment shape. | Codex |
@@ -14,13 +15,27 @@ This section lists the currently identifiable deployment locations so users can 
 
 | Environment | Friendly URL | API URL | Current Repo Evidence |
 | --- | --- | --- | --- |
-| Dev | Not currently defined in the active repo configuration. | Not currently defined in the active repo configuration. | The repository contains local development entrypoints and AWS profiles for a dev account, but no active `TradingCopier` stack was present in the checked dev regions at the time this document was written. |
+| Dev | Not currently defined in the active repo configuration. | Not currently defined in the active repo configuration. | The repository contains local development entrypoints and AWS profiles for a dev account, but no separate deployed `TradingCopier` dev stack is currently defined in the active CDK app. |
 | Test | Not currently defined in the active repo configuration. | Not currently defined in the active repo configuration. | No dedicated test stack, hostname, or environment mapping is defined in the active CDK stack. |
 | Prod | Not currently defined as a custom domain in the active repo configuration. | `https://ygkpu00da4.execute-api.eu-west-1.amazonaws.com` | The active CloudFormation stack is `TradingCopierStack` in AWS account `732439976770`, region `eu-west-1`, and the stack outputs expose the API base URL from API Gateway. |
 
 Active stack names to check in AWS CloudFormation for the live environment:
 
 - `TradingCopierStack`
+
+### Current Deploy Profile Mapping
+
+- **Live/prod deploy profile:** `aws-lean-prod-pile-eu-west-1`
+- **Observed live AWS account:** `732439976770`
+- **Observed live region:** `eu-west-1`
+- **Observed live stack:** `TradingCopierStack`
+- **Repo-level dev profile present locally but not mapped to an active AWS stack in this CDK app:** `aws-lean-dev-pile-eu-west-1`
+
+### Current Environment Reality
+
+- This repository currently has **one active AWS CDK stack target** for TradingCopier: `TradingCopierStack` in `eu-west-1`.
+- The repository does include local development entrypoints and local AWS profile material, but it does **not** currently define a separate deployed AWS `dev` or `test` TradingCopier stack.
+- In practical operator terms, "deploy to dev" is currently limited to local build/test/synth or a future explicit non-prod stack that still needs to be added to the repo.
 
 ## Purpose
 
@@ -51,8 +66,9 @@ The active platform covers:
 - Telegram-driven signal intake through a webhook endpoint
 - configurable symbol mapping and lot sizing
 - configurable target account selection for demo and live mode
-- configurable TP-leg selection through `risktrades` values such as `1`, `1,2`, or `1,2,3`
+- configurable TP-leg selection through `risktrades` values such as `1`, `1,2`, `1,2,3`, or `1,2,3,4`
 - multi-leg TP execution against MetaCopier
+- VIPGold-specific multi-order execution with a shared entry price and staged post-TP stop-loss management
 - trade history and per-trade inspection
 - manual trade-management preview and apply flows
 - automatic post-fill signal rebase to preserve original risk and reward distances from actual fill price
@@ -133,6 +149,7 @@ Responsibilities:
 - generate per-leg request IDs
 - submit one MetaCopier trade per TP leg
 - persist combined execution results and high-level status
+- apply template-specific execution plans such as the current VIPGold four-leg same-entry plan
 
 High-level statuses currently used:
 
@@ -153,6 +170,7 @@ Responsibilities:
 - resolve execution mode and target account
 - resolve symbol mapping and lot size before execution
 - expose limited Telegram control commands for execution mode, dry-run test mode, TP-leg selection, lot override, history, runtime sync, and news feed operations
+- support Telegram-side VIPGold execution planning before handing off to the execution service
 - call the execution service with an already-resolved execution request
 - reply back into the Telegram chat with submission and result feedback
 
@@ -162,6 +180,7 @@ Current optimization:
 - `/metadatarefresh` forces a config reload in the webhook runtime
 - Telegram photo-caption intake strips non-signal commentary, normalizes `Stop Loss` to `SL`, removes decorative emoji/pip suffix noise, and preserves the parser-required `SYMBOL | BUY/SELL entry` delimiter format
 - Telegram `/mode test` is a chat-level dry-run override: it resolves symbol, lot, target account, and TP-leg selection exactly like a live submission but stops before `ExecutionService` calls MetaCopier
+- Telegram `/risktrades` currently accepts up to leg `4` (`1`, `2`, `3`, `4`) even though the main live special case is the VIPGold four-leg template rather than the default multi-TP path
 
 Deployment note:
 
@@ -254,6 +273,7 @@ Current internal management capabilities include:
 - enforce allowed chat and user rules when configured
 - parse and execute supported signal messages
 - serve limited operational commands such as `/mode`, `/mode test`, `/risktrades`, `/lot`, `/history`, `/admin`, `/sync`, and news-feed controls
+- for VIPGold signals, expand the parsed signal into the current four-trade execution plan before submitting to MetaCopier
 
 ### System-To-System Flow
 
@@ -273,10 +293,12 @@ Current internal management capabilities include:
 7. The system stores per-leg execution IDs, request IDs, and provider responses in the trade record.
 8. Once a live position exists, the runtime applies signal-magnitude rebase so the SL and TP distances match the original signal from the actual fill price.
 9. MetaCopier websocket events update open-position and history snapshots in the ECS worker.
-10. When TP1 is confirmed by matching close evidence, the worker moves the remaining open legs to break-even.
-11. When TP2 is confirmed by matching close evidence, the worker moves the final open leg stop according to the configured final-leg logic.
-12. DynamoDB is updated only when runtime state, management state, or error state materially changes.
-13. Operators can inspect the resulting trade state through the history and trade-detail APIs.
+10. For the current VIPGold strategy, the Telegram runtime expands a parsed zone signal into four limit orders using the same entry price placed $1 inside the nearest zone boundary.
+11. In the current VIPGold plan, trades 1 and 2 target TP1, trade 3 targets the midpoint between TP1 and TP2, and trade 4 targets TP2.
+12. When VIPGold trades 1 and 2 are both confirmed closed at TP1, the worker moves trades 3 and 4 to break-even.
+13. When VIPGold trade 3 is confirmed closed at its midpoint TP, the worker moves trade 4 stop loss to TP1.
+14. DynamoDB is updated only when runtime state, management state, or error state materially changes.
+15. Operators can inspect the resulting trade state through the history and trade-detail APIs.
 
 ## Current Reusable Assets
 
@@ -307,5 +329,7 @@ These support local development and testing but are not the production runtime p
 
 - The production stack currently runs in AWS account `732439976770`, region `eu-west-1`.
 - The production runtime includes one ECS websocket worker and one 5-minute scheduled reconciliation Lambda.
+- The observed production deploy profile used operationally is `aws-lean-prod-pile-eu-west-1`.
+- No separate AWS `dev` or `test` TradingCopier stack is currently defined in the active CDK app, even though local development entrypoints and non-prod profile material exist on the operator machine.
 - The active architecture intentionally keeps partial executions live and managed.
 - A leg is expected to be considered `CLOSED` only when actual broker close evidence is available, not merely because it is absent from the latest open-position snapshot.

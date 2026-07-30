@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchTargetAccountsConfig, fetchTradeHistory } from "../services/api";
+import { deleteTrade, deleteTradeHistoryBulk, fetchTargetAccountsConfig, fetchTradeHistory } from "../services/api";
 import { TargetAccountsConfig, TradeRecord } from "../types";
 import { TradeHistoryTable } from "../components/TradeHistoryTable";
 
@@ -10,6 +10,8 @@ export function TradeHistoryPage() {
   const [filter, setFilter] = useState<"ACTIVE" | "CLOSED">("ACTIVE");
   const [error, setError] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
+  const [deletingSignalId, setDeletingSignalId] = useState<string | undefined>();
+  const [deletingBulkScope, setDeletingBulkScope] = useState<"ACTIVE" | "CLOSED" | undefined>();
 
   const load = async () => {
     try {
@@ -52,6 +54,34 @@ export function TradeHistoryPage() {
       demoAccount && liveAccount === demoAccount ? "DEMO/LIVE" : "LIVE";
   }
 
+  const handleDeleteTrade = async (signalId: string) => {
+    if (!window.confirm(`Delete trade ${signalId} from the database?`)) return;
+    try {
+      setDeletingSignalId(signalId);
+      setError(undefined);
+      await deleteTrade(signalId);
+      await load();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setDeletingSignalId(undefined);
+    }
+  };
+
+  const handleDeleteBulk = async (scope: "ACTIVE" | "CLOSED") => {
+    if (!window.confirm(`Delete all ${scope.toLowerCase()} trades from the database?`)) return;
+    try {
+      setDeletingBulkScope(scope);
+      setError(undefined);
+      await deleteTradeHistoryBulk(scope);
+      await load();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setDeletingBulkScope(undefined);
+    }
+  };
+
   return (
     <div className="stack">
       {error ? <p className="error">{error}</p> : null}
@@ -91,6 +121,10 @@ export function TradeHistoryPage() {
         filter={filter}
         onFilterChange={setFilter}
         accountModeByAccount={accountModeByAccount}
+        deletingSignalId={deletingSignalId}
+        onDeleteTrade={handleDeleteTrade}
+        deletingBulkScope={deletingBulkScope}
+        onDeleteBulk={handleDeleteBulk}
       />
     </div>
   );

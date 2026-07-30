@@ -27,7 +27,7 @@ const selectRiskTradeLegs = (
     (riskTrades ?? "1,2,3")
       .split(",")
       .map((part) => part.trim())
-      .filter((part): part is RiskTradeLeg => part === "1" || part === "2" || part === "3")
+      .filter((part): part is RiskTradeLeg => part === "1" || part === "2" || part === "3" || part === "4")
   );
 
   if (selectedLegs.size === 0) {

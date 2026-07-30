@@ -351,13 +351,19 @@ export class BreakevenWebsocketAutomation {
     const legRequestIds = new Set(
       legs.map((leg) => extractRequestId(leg)).filter((v): v is number => v !== undefined)
     );
-    const matchedOpenPositions = openPositions.filter((position) => {
+    const candidateOpenPositions = openPositions.filter((position) => {
       const side = extractPositionSide(position);
       const symbol = extractPositionSymbol(position);
-      if (!(side === trade.side && !!symbol && expectedSymbols.has(symbol))) return false;
+      return side === trade.side && !!symbol && expectedSymbols.has(symbol);
+    });
+    const requestMatchedOpenPositions = candidateOpenPositions.filter((position) => {
       const requestId = extractRequestId(position);
       return legRequestIds.size > 0 && requestId !== undefined && legRequestIds.has(requestId);
     });
+    const matchedOpenPositions =
+      requestMatchedOpenPositions.length > 0 || legRequestIds.size === 0
+        ? requestMatchedOpenPositions
+        : candidateOpenPositions;
     const matchedHistoryEvents = historyEvents.filter((event) => {
       const side = extractPositionSide(event);
       const symbol = extractPositionSymbol(event);
@@ -732,74 +738,146 @@ export class BreakevenWebsocketAutomation {
     const groupTrades = trades
       .filter((trade) => trade.tradeTemplate === "VIPGOLD" && trade.strategyGroupId === groupId)
       .sort((a, b) => (a.strategyLegIndex ?? 999) - (b.strategyLegIndex ?? 999));
-    if (groupTrades.length < 2) return;
+    if (groupTrades.length < 4) return;
 
-    const earliestTp = Math.min(
-      ...groupTrades.flatMap((trade) => trade.takeProfits).filter((tp) => Number.isFinite(tp))
-    );
-    if (!Number.isFinite(earliestTp)) return;
-
-    const tp1Closed = groupTrades.find((trade) => {
-      const providerResponse = (trade.providerResponse as GenericObject | undefined) ?? {};
-      const legs = toArray(providerResponse.legs);
-      const leg = legs[0];
-      return (
-        trade.takeProfits[0] === earliestTp &&
-        leg &&
-        asString(leg.status) === "EXECUTED" &&
-        asString(leg.runtimeState) === "CLOSED"
-      );
-    });
-    if (!tp1Closed) return;
-
+    const byLeg = new Map<number, TradeRecord>();
     for (const trade of groupTrades) {
-      if (trade.signalId === tp1Closed.signalId) continue;
-      const providerResponse = (trade.providerResponse as GenericObject | undefined) ?? {};
-      const existingBe = (providerResponse.breakeven as GenericObject | undefined) ?? {};
-      if (asString(existingBe.status) === "COMPLETED") continue;
-
-      const legs = toArray(providerResponse.legs);
-      const leg = legs[0];
-      if (!leg || asString(leg.status) !== "EXECUTED" || asString(leg.runtimeState) !== "OPEN") continue;
-
-      const openPositions = this.openPositionsByAccount.get(trade.targetAccount) ?? [];
-      const requestId = extractRequestId(leg);
-      if (requestId === undefined) continue;
-      const openPosition = openPositions.find((position) => extractRequestId(position) === requestId);
-      if (!openPosition) continue;
-      if (
-        hasManualTargetEdit({
-          position: openPosition,
-          expectedStopLoss: extractManagedStopLoss(leg, trade),
-          expectedTakeProfit: extractManagedTakeProfit(leg, trade, 1)
-        })
-      ) {
-        continue;
+      const legIndex = trade.strategyLegIndex;
+      if (typeof legIndex === "number") {
+        byLeg.set(legIndex, trade);
       }
+    }
 
-      const modifyResult = await this.modifyPositionStopLossToBreakEven({
-        accountId: trade.targetAccount,
-        position: openPosition,
-        side: trade.side,
-        breakEvenPrice: trade.entry
-      });
-      if (!modifyResult.ok) continue;
+    const trade1 = byLeg.get(1);
+    const trade2 = byLeg.get(2);
+    const trade3 = byLeg.get(3);
+    const trade4 = byLeg.get(4);
+    if (!trade1 || !trade2 || !trade3 || !trade4) return;
 
-      leg.currentStopLoss = modifyResult.verifiedStopLoss;
-      leg.managedStopLoss = modifyResult.verifiedStopLoss;
-      providerResponse.breakeven = {
-        status: "COMPLETED",
-        triggeredAt: new Date().toISOString(),
-        triggeredByStrategyGroup: groupId,
-        movedLegs: [{ leg: trade.strategyLegIndex ?? 1, positionId: extractPositionId(openPosition) ?? "-" }]
-      };
-      await this.repository.updateProviderResponse({
-        userId: trade.userId,
-        signalId: trade.signalId,
-        createdAt: trade.createdAt,
-        providerResponse,
-        errorMessage: undefined
-      });
+    const getPrimaryLeg = (trade: TradeRecord): GenericObject | undefined => {
+      const providerResponse = (trade.providerResponse as GenericObject | undefined) ?? {};
+      const legs = toArray(providerResponse.legs);
+      return legs[0];
+    };
+
+    const isClosedExecuted = (trade: TradeRecord): boolean => {
+      const leg = getPrimaryLeg(trade);
+      return !!leg && asString(leg.status) === "EXECUTED" && asString(leg.runtimeState) === "CLOSED";
+    };
+
+    const isOpenExecuted = (trade: TradeRecord): boolean => {
+      const leg = getPrimaryLeg(trade);
+      return !!leg && asString(leg.status) === "EXECUTED" && asString(leg.runtimeState) === "OPEN";
+    };
+
+    const tp1Triggered = isClosedExecuted(trade1) && isClosedExecuted(trade2);
+    if (tp1Triggered) {
+      for (const trade of [trade3, trade4]) {
+        const providerResponse = (trade.providerResponse as GenericObject | undefined) ?? {};
+        const existingBe = (providerResponse.breakeven as GenericObject | undefined) ?? {};
+        if (asString(existingBe.status) === "COMPLETED") continue;
+
+        const leg = getPrimaryLeg(trade);
+        if (!leg || !isOpenExecuted(trade)) continue;
+
+        const openPositions = this.openPositionsByAccount.get(trade.targetAccount) ?? [];
+        const requestId = extractRequestId(leg);
+        if (requestId === undefined) continue;
+        const openPosition = openPositions.find((position) => extractRequestId(position) === requestId);
+        if (!openPosition) continue;
+        if (
+          hasManualTargetEdit({
+            position: openPosition,
+            expectedStopLoss: extractManagedStopLoss(leg, trade),
+            expectedTakeProfit: extractManagedTakeProfit(leg, trade, 1)
+          })
+        ) {
+          continue;
+        }
+
+        const modifyResult = await this.modifyPositionStopLossToBreakEven({
+          accountId: trade.targetAccount,
+          position: openPosition,
+          side: trade.side,
+          breakEvenPrice: trade.entry
+        });
+        if (!modifyResult.ok) continue;
+
+        leg.currentStopLoss = modifyResult.verifiedStopLoss;
+        leg.managedStopLoss = modifyResult.verifiedStopLoss;
+        providerResponse.breakeven = {
+          status: "COMPLETED",
+          triggeredAt: new Date().toISOString(),
+          triggeredByStrategyGroup: groupId,
+          sourceStage: "TP1",
+          movedLegs: [{ leg: trade.strategyLegIndex ?? 1, positionId: extractPositionId(openPosition) ?? "-" }]
+        };
+        await this.repository.updateProviderResponse({
+          userId: trade.userId,
+          signalId: trade.signalId,
+          createdAt: trade.createdAt,
+          providerResponse,
+          errorMessage: undefined
+        });
+      }
+    }
+
+    const trade3PrimaryLeg = getPrimaryLeg(trade3);
+    const trade4PrimaryLeg = getPrimaryLeg(trade4);
+    const trade4ProviderResponse = (trade4.providerResponse as GenericObject | undefined) ?? {};
+    const existingFinalLegTrail = (trade4ProviderResponse.finalLegTrail as GenericObject | undefined) ?? {};
+
+    if (
+      tp1Triggered &&
+      trade3PrimaryLeg &&
+      trade4PrimaryLeg &&
+      isClosedExecuted(trade3) &&
+      isOpenExecuted(trade4) &&
+      asString(existingFinalLegTrail.status) !== "COMPLETED"
+    ) {
+      const openPositions = this.openPositionsByAccount.get(trade4.targetAccount) ?? [];
+      const requestId = extractRequestId(trade4PrimaryLeg);
+      if (requestId !== undefined) {
+        const openPosition = openPositions.find((position) => extractRequestId(position) === requestId);
+        if (
+          openPosition &&
+          !hasManualTargetEdit({
+            position: openPosition,
+            expectedStopLoss: extractManagedStopLoss(trade4PrimaryLeg, trade4),
+            expectedTakeProfit: extractManagedTakeProfit(trade4PrimaryLeg, trade4, 1)
+          })
+        ) {
+          const targetStopLoss = trade1.takeProfits[0];
+          if (Number.isFinite(targetStopLoss)) {
+            const moved = await this.modifyPositionStopLossToBreakEven({
+              accountId: trade4.targetAccount,
+              position: openPosition,
+              side: trade4.side,
+              breakEvenPrice: targetStopLoss
+            });
+            if (moved.ok) {
+              trade4PrimaryLeg.currentStopLoss = moved.verifiedStopLoss;
+              trade4PrimaryLeg.managedStopLoss = moved.verifiedStopLoss;
+              trade4ProviderResponse.finalLegTrail = {
+                status: "COMPLETED",
+                triggeredAt: new Date().toISOString(),
+                triggeredByStrategyGroup: groupId,
+                sourceStage: "TP_MID",
+                sourceLeg: 3,
+                targetStopLoss,
+                movedLegs: [{ leg: 4, positionId: extractPositionId(openPosition) ?? "-", newStopLoss: moved.verifiedStopLoss }]
+              };
+              await this.repository.updateProviderResponse({
+                userId: trade4.userId,
+                signalId: trade4.signalId,
+                createdAt: trade4.createdAt,
+                providerResponse: trade4ProviderResponse,
+                errorMessage: undefined
+              });
+            }
+          }
+        }
+      }
     }
   }
 
