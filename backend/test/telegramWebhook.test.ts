@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { parseSignal } from "../src/parsers/signalParser";
-import { resolveTelegramExecutionMode, resolveTelegramSignalText } from "../src/handlers/telegramWebhook";
+import {
+  buildVipGoldExecutionPlan,
+  resolveTelegramExecutionMode,
+  resolveTelegramSignalText
+} from "../src/handlers/telegramWebhook";
 
 test("resolveTelegramSignalText prefers text when present", () => {
   const result = resolveTelegramSignalText({
@@ -39,7 +43,8 @@ EURGBP| BUY 0.86882
     orderType: "MARKET",
     entry: 0.86882,
     stopLoss: 0.86575,
-    takeProfits: [0.8708, 0.87182, 0.87803]
+    takeProfits: [0.8708, 0.87182, 0.87803],
+    template: "EVOLUTE"
   });
 });
 
@@ -76,4 +81,46 @@ test("resolveTelegramExecutionMode prefers telegram profile override including T
   assert.equal(resolveTelegramExecutionMode({ executionMode: "LIVE" }, { executionMode: "DEMO" }), "LIVE");
   assert.equal(resolveTelegramExecutionMode(undefined, { executionMode: "LIVE" }), "LIVE");
   assert.equal(resolveTelegramExecutionMode(undefined, {}), "DEMO");
+});
+
+test("buildVipGoldExecutionPlan puts BUY legs 1-2 at the near boundary and legs 3-4 at midpoint", () => {
+  const plan = buildVipGoldExecutionPlan({
+    symbol: "XAUUSD",
+    side: "BUY",
+    orderType: "LIMIT",
+    entry: 3340,
+    stopLoss: 3325,
+    takeProfits: [3350, 3360],
+    template: "VIPGOLD",
+    entryRangeLow: 3330,
+    entryRangeHigh: 3340
+  });
+
+  assert.deepEqual(plan, [
+    { leg: 1, entry: 3340, takeProfit: 3350 },
+    { leg: 2, entry: 3340, takeProfit: 3350 },
+    { leg: 3, entry: 3335, takeProfit: 3355 },
+    { leg: 4, entry: 3335, takeProfit: 3360 }
+  ]);
+});
+
+test("buildVipGoldExecutionPlan puts SELL legs 1-2 at the near boundary and legs 3-4 at midpoint", () => {
+  const plan = buildVipGoldExecutionPlan({
+    symbol: "XAUUSD",
+    side: "SELL",
+    orderType: "LIMIT",
+    entry: 3330,
+    stopLoss: 3345,
+    takeProfits: [3320, 3310],
+    template: "VIPGOLD",
+    entryRangeLow: 3330,
+    entryRangeHigh: 3340
+  });
+
+  assert.deepEqual(plan, [
+    { leg: 1, entry: 3330, takeProfit: 3320 },
+    { leg: 2, entry: 3330, takeProfit: 3320 },
+    { leg: 3, entry: 3335, takeProfit: 3315 },
+    { leg: 4, entry: 3335, takeProfit: 3310 }
+  ]);
 });

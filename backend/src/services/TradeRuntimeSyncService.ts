@@ -26,6 +26,11 @@ const toObj = (value: unknown): Obj | undefined =>
 
 const toArray = (value: unknown): Obj[] => (Array.isArray(value) ? (value as Obj[]) : []);
 const stableJson = (value: unknown): string => JSON.stringify(value);
+const debugEnabled = (): boolean => (process.env.RUNTIME_SYNC_DEBUG ?? "false").toLowerCase() === "true";
+const sampleKeys = (items: Obj[]): string[] => {
+  const first = items[0];
+  return first ? Object.keys(first).sort() : [];
+};
 const formatTradeSetLine = (trade: TradeRecord): string | undefined =>
   trade.tradeSetName ? `${trade.tradeSetName}${trade.tradeLabel ? ` | ${trade.tradeLabel}` : ""}` : undefined;
 
@@ -311,6 +316,14 @@ export class TradeRuntimeSyncService {
             const positions = Array.isArray(res.body)
               ? (res.body as Obj[])
               : toArray(bodyObj?.openPositions ?? bodyObj?.positions ?? bodyObj?.items);
+            if (debugEnabled()) {
+              console.log("runtime-sync open positions loaded", {
+                accountId,
+                endpoint,
+                count: positions.length,
+                sampleKeys: sampleKeys(positions)
+              });
+            }
             map.set(accountId, { ok: true, positions });
             return;
           } catch (error) {
@@ -361,6 +374,14 @@ export class TradeRuntimeSyncService {
             const history = Array.isArray(res.body)
               ? (res.body as Obj[])
               : toArray(bodyObj?.history ?? bodyObj?.items ?? bodyObj?.positions ?? bodyObj?.deals ?? bodyObj?.closedPositions);
+            if (debugEnabled()) {
+              console.log("runtime-sync history loaded", {
+                accountId,
+                endpoint,
+                count: history.length,
+                sampleKeys: sampleKeys(history)
+              });
+            }
             map.set(accountId, { ok: true, history });
             return;
           } catch (error) {
@@ -536,6 +557,19 @@ export class TradeRuntimeSyncService {
         if (eventMs === undefined || !Number.isFinite(eventMs)) return true;
         return Math.abs(eventMs - tradeCreatedMs) <= this.requestTimeoutMs * 40;
       });
+      if (debugEnabled()) {
+        console.log("runtime-sync trade candidates", {
+          signalId: trade.signalId,
+          tradeLabel: trade.tradeLabel,
+          symbol: trade.symbol,
+          side: trade.side,
+          targetAccount: trade.targetAccount,
+          candidateOpenPositions: candidateOpenPositions.length,
+          requestMatchedOpenPositions: requestMatchedOpenPositions.length,
+          candidateHistoryEvents: candidateHistoryEvents.length,
+          legRequestIds: Array.from(legRequestIds.values())
+        });
+      }
       const usedPositionIds = new Set<string>();
       const normalizedLegs: Obj[] = legs.map((leg) => {
         const legObj = toObj(leg) ?? {};
@@ -561,6 +595,19 @@ export class TradeRuntimeSyncService {
             ? candidateHistoryEvents.filter((event) => extractRequestId(event) === requestId)
             : [];
         const fallbackHistoryMatches = historyMatches.length > 0 ? historyMatches : candidateHistoryEvents;
+        if (debugEnabled()) {
+          console.log("runtime-sync leg evaluation", {
+            signalId: trade.signalId,
+            tradeLabel: trade.tradeLabel,
+            leg: asNumber(legObj.leg),
+            requestId,
+            originalStatus,
+            openMatches: openMatches.length,
+            historyMatches: historyMatches.length,
+            fallbackHistoryMatches: fallbackHistoryMatches.length,
+            matchedPositionId: matchedPosition ? extractPositionId(matchedPosition) : undefined
+          });
+        }
         let runtimeState: "OPEN" | "CLOSED" | "UNKNOWN" = "UNKNOWN";
         if (openMatches.length > 0) {
           runtimeState = "OPEN";

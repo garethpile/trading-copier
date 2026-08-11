@@ -159,6 +159,7 @@ export class TradingCopierStack extends cdk.Stack {
       METACOPIER_GLOBAL_BASE_URL: "https://api.metacopier.io",
       METACOPIER_USER_EMAIL: metacopierSecret.secretValueFromJson("userEmail").unsafeUnwrap(),
       METACOPIER_REQUEST_TIMEOUT_MS: process.env.METACOPIER_REQUEST_TIMEOUT_MS?.trim() || "25000",
+      RUNTIME_SYNC_DEBUG: process.env.RUNTIME_SYNC_DEBUG?.trim() || "false",
       AUTOMATION_USER_ID:
         process.env.AUTOMATION_USER_ID?.trim() || process.env.TELEGRAM_CONFIG_USER_ID?.trim() || "",
       ALLOWED_TARGET_ACCOUNTS:
@@ -307,7 +308,7 @@ export class TradingCopierStack extends cdk.Stack {
         TELEGRAM_ALLOWED_USER_IDS: process.env.TELEGRAM_ALLOWED_USER_IDS ?? "",
         TELEGRAM_CONFIG_USER_ID: process.env.TELEGRAM_CONFIG_USER_ID ?? ""
       },
-      timeout: cdk.Duration.seconds(20)
+      timeout: cdk.Duration.seconds(29)
     });
 
     // Low-cost always-on worker for immediate BE automation:
@@ -355,7 +356,8 @@ export class TradingCopierStack extends cdk.Stack {
         METACOPIER_BASE_URL: "https://api-london.metacopier.io",
         METACOPIER_SOCKET_URL: "wss://api.metacopier.io/ws/api/v1",
         ALLOWED_TARGET_ACCOUNTS: commonEnv.ALLOWED_TARGET_ACCOUNTS,
-        AUTOMATION_USER_ID: commonEnv.AUTOMATION_USER_ID
+        AUTOMATION_USER_ID: commonEnv.AUTOMATION_USER_ID,
+        BREAKEVEN_DEBUG: process.env.BREAKEVEN_DEBUG?.trim() || "false"
       },
       secrets: {
         METACOPIER_API_KEY: ecs.Secret.fromSecretsManager(metacopierSecret, "apiKey"),

@@ -105,15 +105,17 @@ export class ExecutionService {
   async executeResolved(
     userId: string,
     req: ExecuteTradeResolvedRequest,
-    parseWarnings: string[]
+    parseWarnings: string[],
+    options?: { skipImmediateRuntimeSync?: boolean }
   ) {
-    return this.executeCore(userId, req, parseWarnings);
+    return this.executeCore(userId, req, parseWarnings, options);
   }
 
   private async executeCore(
     userId: string,
     req: ExecuteTradeResolvedRequest,
-    parseWarnings: string[]
+    parseWarnings: string[],
+    options?: { skipImmediateRuntimeSync?: boolean }
   ) {
     const serviceStartedAt = Date.now();
     const createdAt = new Date().toISOString();
@@ -209,7 +211,7 @@ export class ExecutionService {
 
     let immediateRuntimeSyncMs = 0;
     let immediateRuntimeSyncAttempts = 0;
-    if (successfulLegs.length > 0) {
+    if (successfulLegs.length > 0 && !options?.skipImmediateRuntimeSync) {
       const runtimeSyncResult = await this.applyImmediateRuntimeSync(userId, {
         ...record,
         providerResponse

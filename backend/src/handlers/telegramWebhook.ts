@@ -266,13 +266,14 @@ export const buildVipGoldExecutionPlan = (trade: ParsedTrade): Array<{ leg: numb
   if (!Number.isFinite(tp1) || !Number.isFinite(tp2)) return [];
 
   const nearestBoundary = trade.side === "BUY" ? Math.max(low!, high!) : Math.min(low!, high!);
-  const entry = Number((trade.side === "BUY" ? nearestBoundary - 1 : nearestBoundary + 1).toFixed(2));
+  const midpointEntry = Number(((low! + high!) / 2).toFixed(2));
   const midTp = Number(((tp1 + tp2) / 2).toFixed(2));
   const tpPattern = [tp1, tp1, midTp, tp2];
+  const entryPattern = [nearestBoundary, nearestBoundary, midpointEntry, midpointEntry];
 
   return tpPattern.map((takeProfit, index) => ({
     leg: index + 1,
-    entry,
+    entry: entryPattern[index],
     takeProfit
   }));
 };
@@ -499,7 +500,12 @@ const executeParsedTrade = async (input: {
           tradeSetName: vipGoldSetName,
           tradeLabel: `Trade ${leg.leg}`
         };
-        const result = await executionService.executeResolved(input.executionUserId, vipRequest, input.parseWarnings);
+        const result = await executionService.executeResolved(
+          input.executionUserId,
+          vipRequest,
+          input.parseWarnings,
+          { skipImmediateRuntimeSync: true }
+        );
         results.push({ leg: leg.leg, entry: leg.entry, takeProfit: leg.takeProfit, result });
       }
       const executeMs = Date.now() - executeStartedAt;

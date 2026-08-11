@@ -4,6 +4,7 @@
 
 | Date | Update | Author |
 | --- | --- | --- |
+| 2026-08-11 | Split VIPGold range entries so trades 1 and 2 use the nearest zone boundary while trades 3 and 4 use the zone midpoint. | Codex |
 | 2026-07-23 | Updated deployment/config notes with the actual live AWS account, region, stack, and deploy profile mapping; documented that no separate AWS dev/test stack is currently wired in the repo; documented current VIPGold 4-leg same-entry behavior and its staged stop-management rules. | Codex |
 | 2026-04-14 | Added Telegram-only `/mode test` dry-run behavior, documented caption normalization before parsing, and documented that Lambda deploys from compiled `backend/dist`, not `backend/src`. | Codex |
 | 2026-03-29 | Updated the architecture document to reflect explicit `risktrades` TP-leg selection and the Telegram `/risktrades` command. | Codex |
@@ -293,7 +294,7 @@ Current internal management capabilities include:
 7. The system stores per-leg execution IDs, request IDs, and provider responses in the trade record.
 8. Once a live position exists, the runtime applies signal-magnitude rebase so the SL and TP distances match the original signal from the actual fill price.
 9. MetaCopier websocket events update open-position and history snapshots in the ECS worker.
-10. For the current VIPGold strategy, the Telegram runtime expands a parsed zone signal into four limit orders using the same entry price placed $1 inside the nearest zone boundary.
+10. For the current VIPGold strategy, the Telegram runtime expands a parsed zone signal into four limit orders: trades 1 and 2 enter at the zone boundary nearest the current gold price, while trades 3 and 4 enter at the midpoint of the zone.
 11. In the current VIPGold plan, trades 1 and 2 target TP1, trade 3 targets the midpoint between TP1 and TP2, and trade 4 targets TP2.
 12. When VIPGold trades 1 and 2 are both confirmed closed at TP1, the worker moves trades 3 and 4 to break-even.
 13. When VIPGold trade 3 is confirmed closed at its midpoint TP, the worker moves trade 4 stop loss to TP1.

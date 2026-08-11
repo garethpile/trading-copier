@@ -56,6 +56,11 @@ const normalizeSymbol = (value: string): string => value.replace(/[^A-Z0-9]/gi, 
 const MAX_ACCOUNT_HISTORY_EVENTS = 500;
 const MAX_TRADE_HISTORY_EVENTS = 50;
 const MAX_TRADE_OPEN_POSITIONS = 20;
+const wsDebugEnabled = (): boolean => (process.env.BREAKEVEN_DEBUG ?? "false").toLowerCase() === "true";
+const sampleKeys = (items: GenericObject[]): string[] => {
+  const first = items[0];
+  return first ? Object.keys(first).sort() : [];
+};
 
 const extractPositionSymbol = (position: GenericObject): string | undefined => {
   const symbol = asString(position.symbol ?? position.instrument ?? position.asset);
@@ -265,10 +270,25 @@ export class BreakevenWebsocketAutomation {
       const type = payload.type;
       const data = payload.data ?? {};
       const accountId = asString(data.accountId);
+      if (wsDebugEnabled()) {
+        console.log("[WS] event received", {
+          type,
+          accountId,
+          dataKeys: Object.keys(data).sort()
+        });
+      }
       if (!accountId) return;
 
       if (type === "UpdateOpenPositionsDTO") {
-        this.openPositionsByAccount.set(accountId, toArray(data.openPositions));
+        const openPositions = toArray(data.openPositions);
+        if (wsDebugEnabled()) {
+          console.log("[WS] open positions update", {
+            accountId,
+            count: openPositions.length,
+            sampleKeys: sampleKeys(openPositions)
+          });
+        }
+        this.openPositionsByAccount.set(accountId, openPositions);
         this.scheduleEvaluation(accountId);
         return;
       }
@@ -279,6 +299,13 @@ export class BreakevenWebsocketAutomation {
           ...entry,
           socketReceivedAt: receivedAt
         }));
+        if (wsDebugEnabled()) {
+          console.log("[WS] history update", {
+            accountId,
+            count: incoming.length,
+            sampleKeys: sampleKeys(incoming)
+          });
+        }
         if (incoming.length === 0) return;
         const existing = this.historyByAccount.get(accountId) ?? [];
         const merged = [...existing, ...incoming];
